@@ -1,0 +1,5086 @@
+generator client {
+    provider = "prisma-client-js"
+    binaryTargets = ["native", "linux-musl-arm64-openssl-3.0.x"]
+    output = "/home/ubuntu/welcome_to_anna/nextjs_space/node_modules/.prisma/client"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  NEWCOMER
+  RESIDENT
+  PROVIDER
+  NONPROFIT
+  ARTIST
+  ADMIN
+  CHAMBER
+  CITY
+  EDC
+  GUEST
+  SPONSOR
+}
+
+enum ProviderTier {
+  FREE
+  CONNECTED
+  PRIORITY
+}
+
+enum ProviderStatus {
+  NEW
+  PHANTOM
+  CLAIMED
+  CERTIFIED
+}
+
+enum ProviderSource {
+  ADMIN
+  SURVEY
+  REQUESTED
+  NOMINATED
+}
+
+enum LeadStatus {
+  DELIVERED
+  VIEWED
+  RESPONDED
+  CONVERTED
+  DECLINED
+  EXPIRED
+}
+
+model User {
+  id                  String   @id @default(cuid())
+  email               String   @unique
+  passwordHash        String?
+  name                String?
+  phone               String?
+  role                UserRole @default(NEWCOMER)
+  isVerifiedResident  Boolean  @default(false)
+  onboardingCompleted Boolean  @default(false)
+  answers             Json? // Onboarding questionnaire answers
+  tags                String[] @default([])
+  preferences         Json? // Communication preferences etc
+  dataConsent         Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  lastActive          DateTime @default(now())
+
+  referralCode         String? @unique
+  referredById         String?
+  referralTokensEarned Int     @default(0)
+  tokenBalance         Int     @default(0) // Resident/newcomer token wallet (garage sales, classifieds, etc.)
+
+  // Resident-to-resident neighbor matching (opt-in)
+  neighborConnectEnabled Boolean @default(false)
+  neighborBio            String?
+
+  // ---- Personal Digital Card (shared card engine; all member roles) ----
+  cardEnabled        Boolean   @default(false) // member generated their card (accepted 18+)
+  cardSlug           String? // public card URL: /card/{name}-{short-unique} (uniqueness enforced in app)
+  cardTitle          String? // optional title/tagline e.g. "Realtor", "New to Anna", "Council Member, Place 4"
+  avatarUrl          String? // photo; falls back to initials avatar when null
+  cardBannerUrl      String? // optional banner (3:1); shown only when cardBannerStatus == approved
+  cardBannerStatus   String?   @default("none") // none | pending | approved | rejected (admin moderation)
+  isVerifiedOfficial Boolean   @default(false) // ADMIN-assigned ONLY — never self-selectable
+  showNewToAnna      Boolean   @default(false) // member-controlled optional "New to Anna" badge
+  cardCity           String?   @default("Anna") // city only — street address is NEVER on a personal card
+  // ---- Anna-ONLY front-door gate ----
+  // Selected at signup ("what city do you live in?"). Values map to lib/anna-eligibility.ts.
+  // Anna city / Anna ETJ = full account; everything else = Guest Pass only.
+  homeLocation       String?
+  cardFacebookUrl    String?
+  cardInstagramUrl   String?
+  ageAttested        Boolean   @default(false) // one-time 18+ attestation (personal cards are 18+ only)
+  ageAttestedAt      DateTime?
+  // Personal card privacy toggles (defaults match the personal-card spec table)
+  cardShowPhone      Boolean   @default(false)
+  cardShowEmail      Boolean   @default(false)
+  cardShowCity       Boolean   @default(true)
+  cardShowSocials    Boolean   @default(false)
+  cardShowMessage    Boolean   @default(true) // in-app message is the safe default channel
+
+  // Welcome Board Ambassador: opted-in neighbor who gets alerted about unanswered newcomer intros
+  isAmbassador Boolean @default(false)
+
+  // Extra login security (email one-time code). Auto-required for official roles/admins;
+  // any user may also opt in. See lib/mfa.ts.
+  mfaEnabled Boolean @default(false)
+
+  provider          Provider?
+  notifications     Notification[]
+  volunteerSignups  VolunteerSignup[]         @relation("UserVolunteerSignups")
+  leadsAsNewcomer   Lead[]                    @relation("NewcomerLeads")
+  carePackageClips  CarePackageClip[]
+  sessions          Session[]
+  // ---- Admin moderation (ADMIN-only visibility) ----
+  accountStatus     String                    @default("active") // active | warned | banned
+  moderationNote    String? // latest admin note (reason for warn/ban)
+  statusUpdatedAt   DateTime? // when accountStatus last changed
+  moderationActions ModerationAction[]        @relation("ModerationTarget")
+  moderationsMade   ModerationAction[]        @relation("ModerationActor")
+  accounts          Account[]
+  submittedCases    BusinessAssistanceCase[]  @relation("CaseSubmitter")
+  assignedCases     BusinessAssistanceCase[]  @relation("CaseAssignee")
+  roleAssignments   UserRoleAssignment[]      @relation("UserRoles")
+  squarePrefs       UserSquarePreference[]    @relation("UserSquarePrefs")
+  artistStudio      ArtistStudioProfile?      @relation("UserArtistStudio")
+  payoutProfile     ContributorPayoutProfile? @relation("UserPayoutProfile")
+  artworks          ArtworkPiece[]            @relation("UserArtworks")
+  referredBy        User?                     @relation("Referrals", fields: [referredById], references: [id])
+  referrals         User[]                    @relation("Referrals")
+  rfpRequests       RfpRequest[]              @relation("RfpAuthor")
+  helpRequests      HelpRequest[]             @relation("HelpAuthor")
+  platformSubscription PlatformSubscription?  @relation("UserPlatformSub")
+  grantConcierge       GrantConciergeSubscription? @relation("UserGrantConcierge")
+  listings             Listing[]                   @relation("UserListings")
+  newcomerMatches      NewcomerMatch[]           @relation("UserNewcomerMatches")
+  onboardingSurvey     UserOnboardingSurvey?
+
+  @@index([role])
+  @@index([createdAt])
+  @@index([referralCode])
+}
+
+// 10-question persona onboarding survey (first sign-in). Drives persona tags + demographic reports.
+model UserOnboardingSurvey {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  livesInAnna     Boolean
+  tenureYears     String?  // "<1_year", "1-3_years", etc.
+  movedFrom       String?  // "McKinney, TX", "California", etc.
+  ageRange        String   // "25-34", "35-49", etc.
+  worksInAnna     Boolean
+  isJobSeeker     Boolean  @default(false)
+  isStudent       Boolean  @default(false)
+  ownsBusiness    Boolean  @default(false)
+  openingBusiness Boolean  @default(false)
+  isArtist        Boolean  @default(false)
+  artistTypes     Json?    // ["Musician", "Painter"]
+  completedAt     DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Civic Nexus matchmaking — a saved, auditable record of what each resident's
+// onboarding answers matched them to across the platform's live inventories
+// (businesses, jobs, grants, events, volunteer + nonprofit + magazine work).
+// Recomputed on survey completion. Powers the resident dashboard AND the
+// role-based executive report. Scores/reasons are computed from real data only.
+model NewcomerMatch {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation("UserNewcomerMatches", fields: [userId], references: [id], onDelete: Cascade)
+  category   String   // BUSINESS | JOB | GRANT | EVENT | VOLUNTEER | NONPROFIT | ART_ASSIGNMENT
+  targetId   String
+  title      String
+  subtitle   String?
+  href       String
+  matchScore Int      // 0-100 relevance, computed from the resident's stated intent
+  reason     String   // plain-language why this matched — shown to the resident
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, category, targetId])
+  @@index([userId, matchScore])
+  @@index([category, createdAt])
+}
+
+// Platform SaaS membership subscription (audience-specific recurring plan).
+// SEPARATE from the Provider lead/token tiers and the Digital Card add-ons.
+//   plan: ENTERPRISE (business) | NONPROFIT | ARTIST
+// One active membership per user account.
+model PlatformSubscription {
+  id               String    @id @default(cuid())
+  userId           String    @unique
+  plan             String // ENTERPRISE | NONPROFIT | ARTIST
+  status           String    @default("active") // active | canceling | canceled | past_due
+  priceCents       Int
+  stripeCustomerId String?
+  stripeSubId      String?   @unique
+  currentPeriodEnd DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  user User @relation("UserPlatformSub", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([plan])
+  @@index([status])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model Provider {
+  id                   String         @id @default(cuid())
+  userId               String?        @unique
+  businessName         String
+  category             String
+  subcategory          String?
+  description          String?
+  tier                 ProviderTier   @default(FREE)
+  phone                String?
+  email                String?
+  website              String?
+  address              String?
+  city                 String?        @default("Anna")
+  state                String?        @default("TX")
+  zip                  String?        @default("75409")
+  hours                Json? // Operating hours
+  tags                 String[]       @default([])
+  isVerified           Boolean        @default(false) // Chamber verified (legacy single flag)
+  isChamberMember      Boolean        @default(false)
+  ownershipVerified    Boolean        @default(false) // Identity/ownership documentation reviewed
+  certifiedConnector   Boolean        @default(false) // Completed platform Certified Connector process
+  setupFeePaid         Boolean        @default(false)
+  stripeCustomerId     String?
+  stripeSubId          String?
+  subscriptionEnd      DateTime?
+  tokenBalance         Int            @default(0)
+  totalLeads           Int            @default(0)
+  totalConverted       Int            @default(0)
+  status               ProviderStatus @default(PHANTOM)
+  source               ProviderSource @default(ADMIN)
+  claimCode            String?        // printed on QR/cling/ad — used for claim attribution
+  sourceDoor           String?        // print_digital | founder | transactional | referral | organic | civic
+  referredById         String?        // Provider id that referred this one (Door 4)
+  ownerName            String?
+  ownerEmail           String?
+  taxId                String?
+  logoUrl              String?
+  bannerUrl            String? // Wide header image for personalized tile (paid feature)
+  facebookUrl          String? // Social link — lights the Facebook icon (all tiers)
+  instagramUrl         String? // Social link — lights the Instagram icon (all tiers)
+  youtubeUrl           String? // Social link — lights the YouTube icon (all tiers); feeds MarketBoost
+  candidUrl            String? // Nonprofit transparency profile (Candid/GuideStar) — required for nonprofits
+  candidVerified       Boolean        @default(false) // Shows the "Verified with Candid" trust mark
+  brandPrimary         String? // Hex color for personalized tile (paid feature)
+  brandAccent          String? // Hex accent color for personalized tile (paid feature)
+  tilePersonalized     Boolean        @default(false) // Master toggle for branded tile
+  tileShowDeals        Boolean        @default(true)
+  tileShowListings     Boolean        @default(true)
+  tileShowEvents       Boolean        @default(true)
+  tileShowMessage      Boolean        @default(true)
+  // Personalized tile engagement counters (only tracked for paid tiles)
+  tileViews            Int            @default(0)
+  clickPhone           Int            @default(0)
+  clickWebsite         Int            @default(0)
+  clickDeals           Int            @default(0)
+  clickListings        Int            @default(0)
+  clickEvents          Int            @default(0)
+  clickMessage         Int            @default(0)
+  clickFacebook        Int            @default(0)
+  clickInstagram       Int            @default(0)
+  clickReviews         Int            @default(0)
+  qrScans              Int            @default(0) // Profile opens attributed to a QR scan (?src=qr)
+  cardSlug             String? // public business card URL: /card/{business-slug} (uniqueness enforced in app)
+  bannerStatus         String?        @default("none") // none | pending | approved | rejected (banner moderation)
+  // --- W2-12 Digital Card monetization add-ons (SEPARATE from lead/token tier above) ---
+  cardTier             String?        @default("free") // free | starter | growth | premium (monthly card add-on)
+  cardTierStatus       String?        @default("inactive") // inactive | active | canceling
+  cardAddonSubId       String? // Stripe subscription id for the card add-on (distinct from stripeSubId)
+  cardStripeCustomerId String? // Stripe customer id used for the card add-on subscription
+  cardTierRenewsAt     DateTime? // current period end / next renewal for the card add-on
+  cardAddOns           Json? // lightweight add-on content payload (deals, hours, socials, bio, etc.)
+  cardHasDeal          Boolean        @default(false) // lightweight scalar so directory tiles show "+Deals" without parsing JSON
+  awards               String[]       @default([]) // e.g., "Voted #1 in Coffee"
+  progressNotes        String?
+  stageUpdatedAt       DateTime       @default(now())
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  user            User?                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leads           Lead[]                   @relation("ProviderLeads")
+  tokenPurchases  TokenPurchase[]
+  jobs            Job[]
+  events          Event[]
+  volunteerOpportunities VolunteerOpportunity[]
+  carePackages    CarePackage[]
+  testimonials    Testimonial[]
+  messages        ProviderMessage[]
+  assistanceCases BusinessAssistanceCase[] @relation("ProviderCases")
+  rfpBids         RfpBid[]                 @relation("ProviderBids")
+  sponsoredQuestions SponsoredQuestion[]   @relation("ProviderSponsoredQuestions")
+
+  @@index([category])
+  @@index([tier])
+  @@index([isVerified])
+  @@index([status])
+}
+
+// Match-Marketing "Ask a Newcomer a Question" — an exclusive, sponsored survey
+// question owned by ONE business. Affirmative answers become exclusive leads for
+// that owner only (never shared). Priced per 30-day evaluation window; the floor
+// is MATCH_MARKETING_MIN_TOKENS ($10 equivalent). Owner-editable tiles: question,
+// options, tags, channel (audience), industry.
+model SponsoredQuestion {
+  id           String   @id @default(cuid())
+  providerId   String? // Owning business; null while an admin drafts it
+  question     String
+  options      String[] @default([])
+  tags         String[] @default([]) // routing tags matched against newcomer needs
+  channel      String   @default("PROVIDER") // audience pool: PROVIDER | NONPROFIT | ARTIST (CITY/RESIDENT stay free, not sold here)
+  industry     String? // for by-industry pricing + analytics filtering
+  triggerAnswers String[] @default(["yes", "recommend"]) // answers that create a lead
+  priceTokens  Int      @default(10) // tokens charged for the 30-day window ($10 floor)
+  status       SponsoredQuestionStatus @default(DRAFT)
+  exclusive    Boolean  @default(true) // lead goes ONLY to the owner
+  startsAt     DateTime?
+  expiresAt    DateTime? // end of the paid 30-day evaluation window
+  impressions  Int      @default(0) // times shown to a newcomer
+  responses    Int      @default(0) // affirmative answers (leads generated)
+  leadsOpened  Int      @default(0) // leads the owner engaged/opened
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  provider Provider? @relation("ProviderSponsoredQuestions", fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@index([providerId])
+  @@index([status])
+  @@index([industry])
+}
+
+enum SponsoredQuestionStatus {
+  DRAFT // being set up
+  PENDING // submitted, awaiting admin approval
+  ACTIVE // live in the survey, within paid window
+  PAUSED // temporarily off
+  EXPIRED // 30-day window ended
+}
+
+// Customer testimonials shown on a business profile (moderated).
+model Testimonial {
+  id          String   @id @default(cuid())
+  providerId  String
+  authorName  String
+  authorEmail String?
+  rating      Int      @default(5) // 1-5 stars
+  text        String
+  isApproved  Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, isApproved])
+  @@index([createdAt])
+}
+
+// Direct in-app messages sent from a resident to a business profile.
+model ProviderMessage {
+  id           String   @id @default(cuid())
+  providerId   String
+  senderName   String
+  senderEmail  String
+  senderPhone  String?
+  message      String
+  senderUserId String?
+  isRead       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, isRead])
+  @@index([createdAt])
+}
+
+model Lead {
+  id          String     @id @default(cuid())
+  newcomerId  String
+  providerId  String
+  category    String
+  matchScore  Float      @default(0)
+  status      LeadStatus @default(DELIVERED)
+  tokenCost   Int        @default(1)
+  summary     String? // Anonymized needs summary
+  metadata    Json?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  respondedAt DateTime?
+
+  newcomer User     @relation("NewcomerLeads", fields: [newcomerId], references: [id])
+  provider Provider @relation("ProviderLeads", fields: [providerId], references: [id])
+
+  @@index([providerId, status])
+  @@index([newcomerId])
+  @@index([createdAt])
+}
+
+model TokenPurchase {
+  id              String   @id @default(cuid())
+  providerId      String
+  amount          Int // Number of tokens
+  pricePaid       Float // Dollar amount (legacy — kept for backward compatibility)
+  pricePaidCents  Int? // Authoritative money value stored as integer cents
+  stripePaymentId String?
+  createdAt       DateTime @default(now())
+
+  provider Provider @relation(fields: [providerId], references: [id])
+
+  @@index([providerId])
+}
+
+// Idempotent ledger of promotional / bonus token grants. One row per (reason,recipient)
+// via the unique grantKey so a grant can never be issued twice, and the admin Token
+// Analytics tab can total how many tokens were handed out per program.
+model TokenGrant {
+  id         String   @id @default(cuid())
+  userId     String? // resident recipient (User.id)
+  providerId String? // business recipient (Provider.id)
+  amount     Int
+  reason     String // BUSINESS_SETUP | LISTING_CLAIM | RESIDENT_ONBOARD
+  grantKey   String   @unique // `${reason}:${userId||providerId}` — enforces one grant per recipient/program
+  createdAt  DateTime @default(now())
+
+  @@index([reason, createdAt])
+}
+
+// Idempotency ledger for Stripe webhook events. Every processed event id is
+// recorded here so a replayed or forged-duplicate event can never double-credit
+// tokens, re-mark a business paid, or re-issue a subscription.
+model WebhookEvent {
+  id          String   @id // Stripe event id (evt_...)
+  type        String
+  processedAt DateTime @default(now())
+
+  @@index([type])
+  @@index([processedAt])
+}
+
+model AnnaGraph {
+  id          String   @id @default(cuid())
+  category    String   @unique
+  count       Int      @default(0)
+  commonTags  String[] @default([])
+  percentage  Float    @default(0)
+  lastUpdated DateTime @default(now())
+
+  @@index([category])
+}
+
+model ContactSubmission {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  subject   String?
+  message   String
+  formType  String   @default("contact")
+  status    String   @default("new")
+  createdAt DateTime @default(now())
+}
+
+// Audit trail for every email the Reply Desk sends out. One row per send
+// attempt (SENT or FAILED), so admins have a permanent record of outbound
+// replies drafted by Sierra Grace.
+model MailLog {
+  id            String   @id @default(cuid())
+  recipient     String
+  recipientName String?
+  subject       String
+  body          String
+  status        String   @default("SENT") // SENT | FAILED | QUEUED
+  channel       String   @default("reply") // reply | outreach | sequence
+  sourceType    String? // contact | message | manual | sequence
+  sourceId      String?
+  sequenceKey   String? // e.g. BUS_T1
+  stepNumber    Int? // step within sequence
+  emailedAt     DateTime? // null while QUEUED; set when actually sent
+  readAt        DateTime? // in-app read receipt (future)
+  sentByEmail   String?
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([sourceType, sourceId])
+  @@index([sequenceKey])
+}
+
+// ─── MAILROOM TRIGGER ARCHITECTURE ─────────────────────────────
+
+// Immutable consent ledger — never update a row, only append.
+model ConsentLog {
+  id           String   @id @default(cuid())
+  contactEmail String   // the email address this consent applies to
+  contactId    String?  // optional FK to User/Provider — best-effort
+  channel      String   @default("email") // email | sms | inapp
+  status       String   // GRANTED | WITHDRAWN
+  evidence     String   // claim code, form submission ID, agreement ref — NEVER blank
+  context      String?  // IP, event name, "in person — [date]"
+  grantedAt    DateTime?
+  withdrawnAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([contactEmail, channel])
+  @@index([createdAt])
+}
+
+// One row per contact — tracks active sequence, step, cadence.
+model SequenceState {
+  id                 String    @id @default(cuid())
+  contactEmail       String    // the person in the sequence
+  contactId          String?   // optional FK
+  segment            String    // BUSINESS | ARTIST | NONPROFIT | NEWCOMER | RESIDENT | MOMENT_KEEPER
+  activeSequence     String?   // e.g. BUS_T1 — null if no active sequence
+  queuedSequences    String[]  @default([]) // keys waiting their turn
+  currentStep        Int       @default(0)
+  lastSendAt         DateTime?
+  nextEligibleAt     DateTime?
+  pausedUntil        DateTime?
+  pauseReason        String?   // HumanTouch | Sensitivity | Manual
+  consecutiveMisses  Int       @default(0)
+  exitReason         String?   // Completed | TwoMiss | Manual | Suppressed
+  exitedAt           DateTime?
+  entityName         String?   // business/org name for merge tokens
+  personName         String?   // contact person name
+  providerId         String?   // FK to Provider if BUSINESS
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([contactEmail, activeSequence])
+  @@index([segment])
+  @@index([activeSequence])
+  @@index([nextEligibleAt])
+}
+
+// Active suppression rules — one per type per contact.
+model Suppression {
+  id           String    @id @default(cuid())
+  contactEmail String
+  contactId    String?
+  type         String    // FrequencyCap | HumanTouch | Sensitivity | Unsubscribe | QuietHours
+  active       Boolean   @default(true)
+  expiresAt    DateTime? // null = permanent
+  setBy        String?   // person or system
+  note         String?
+  createdAt    DateTime  @default(now())
+
+  @@index([contactEmail, type, active])
+  @@index([expiresAt])
+}
+
+enum StoryCategory {
+  KIND_DEED
+  LOCAL_STORY
+  ANNOUNCEMENT
+}
+
+model CommunityStory {
+  id         String        @id @default(cuid())
+  title      String
+  content    String
+  category   StoryCategory @default(KIND_DEED)
+  authorName String        @default("Anonymous Neighbor")
+  authorId   String? // optional link to user
+  location   String? // e.g., "Near Harlow Elementary"
+  imageUrls  String[]      @default([]) // community photos attached to the story
+  videoUrl   String? // optional single video clip
+  tags       String[]      @default([]) // auto-generated tags for photo/lead matching
+  isApproved Boolean       @default(false)
+  likes      Int           @default(0)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([category])
+  @@index([isApproved, createdAt])
+}
+
+model Survey {
+  id               String           @id @default(cuid())
+  question         String
+  options          Json // string array, e.g., ["Whataburger", "In-N-Out"]
+  isActive         Boolean          @default(true)
+  category         String? // e.g., "Dining", "Retail", "Recreation"
+  winnerDeclared   Boolean          @default(false) // true once survey hits the vote threshold
+  winningOption    String? // the #1 voted option
+  winnerProviderId String? // matched provider awarded #1 (if any)
+  winnerVotes      Int? // votes the winning option received
+  winnerAt         DateTime? // when #1 was declared
+  // Community authorship: anyone can propose a survey. Null author == admin/seed.
+  authorId         String? // User.id of the neighbor who created it
+  authorName       String? // display name shown as "Asked by ..."
+  authorRole       String? // Resident | Newcomer | Business | Nonprofit | Admin (display + billing)
+  source           String           @default("admin") // admin | community
+  tags             String[]         @default([]) // AI topic tags for searching past surveys
+  allowWriteIn     Boolean          @default(true) // let neighbors add their own votable answer
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  responses        SurveyResponse[]
+
+  @@index([isActive])
+  @@index([winnerDeclared])
+  @@index([authorId])
+}
+
+model Job {
+  id          String   @id @default(cuid())
+  title       String
+  company     String
+  location    String   @default("Anna, TX")
+  type        String   @default("Full-Time")
+  salary      String?
+  description String?
+  applyUrl    String?
+  category    String?
+  tags        String[] @default([])
+  status      String   @default("active")
+  isVerified  Boolean  @default(true)
+  postedById  String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  postedBy Provider? @relation(fields: [postedById], references: [id])
+
+  @@index([status])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model Event {
+  id          String   @id @default(cuid())
+  title       String
+  dateString  String
+  location    String   @default("Anna, TX")
+  description String?
+  type        String   @default("community")
+  link        String?
+  status      String   @default("active")
+  postedById  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  postedBy Provider @relation(fields: [postedById], references: [id])
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model EventRSVP {
+  id        String   @id @default(cuid())
+  tenantId  String
+  eventId   String
+  userId    String
+  email     String
+  name      String
+  status    String   @default("CONFIRMED")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([eventId, userId])
+  @@index([tenantId])
+  @@index([eventId])
+}
+
+model SurveyResponse {
+  id             String   @id @default(cuid())
+  surveyId       String
+  selectedOption String
+  respondentId   String? // optional for anonymous voting
+  submittedAt    DateTime @default(now())
+
+  survey Survey @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+
+  @@unique([surveyId, respondentId]) // one vote per user per survey
+  @@index([surveyId])
+}
+
+model CarePackage {
+  id          String   @id @default(cuid())
+  providerId  String
+  title       String
+  description String
+  offerType   String // percent_off, dollar_off, bogo, bogo_half, free_with_purchase, first_free
+  value       String // "20%", "$10", "BOGO", etc.
+  promoCode   String?
+  expiryDays  Int      @default(30)
+  message     String // Welcome message (max 300 words)
+  imageUrl    String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  provider Provider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  clips    CarePackageClip[]
+
+  @@index([providerId])
+  @@index([active])
+}
+
+model TokenGift {
+  id             String   @id @default(cuid())
+  fromProviderId String
+  toProviderId   String
+  amount         Int
+  message        String?
+  createdAt      DateTime @default(now())
+
+  @@index([fromProviderId])
+  @@index([toProviderId])
+}
+
+model CarePackageClip {
+  id            String   @id @default(cuid())
+  carePackageId String
+  newcomerId    String
+  clippedAt     DateTime @default(now())
+  used          Boolean  @default(false)
+
+  carePackage CarePackage @relation(fields: [carePackageId], references: [id], onDelete: Cascade)
+  newcomer    User        @relation(fields: [newcomerId], references: [id], onDelete: Cascade)
+
+  @@unique([carePackageId, newcomerId])
+  @@index([newcomerId])
+}
+
+enum NomineeType {
+  RESIDENT
+  BUSINESS
+  CITY_LEADER
+  STRANGER
+}
+
+// Kind-Deeds Awards — nominate Anna's Kindest Neighbor
+model KindDeedNomination {
+  id            String      @id @default(cuid())
+  nomineeName   String
+  nomineeType   NomineeType @default(RESIDENT)
+  deedDate      String? // when the kind deed happened (free text, e.g. "June 2026")
+  location      String? // where in Anna it happened
+  reason        String // why they deserve the award
+  nominatorName String      @default("Anonymous Neighbor")
+  nominatorId   String? // optional link to user id
+  isApproved    Boolean     @default(true)
+  isWinner      Boolean     @default(false) // admin crowns the Kindest Neighbor
+  likes         Int         @default(0)
+  tags          String[]    @default([]) // auto-generated tags for photo matching
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([isApproved, createdAt])
+  @@index([isWinner])
+}
+
+// Community Billboard — vetted residents & businesses post notices
+model BillboardPost {
+  id               String   @id @default(cuid())
+  title            String
+  body             String
+  category         String   @default("GENERAL") // GENERAL, FOR_SALE, SERVICES, EVENTS, RECOMMEND, LOST_FOUND
+  authorName       String   @default("Anna Neighbor")
+  authorId         String?
+  authorType       String   @default("RESIDENT") // RESIDENT or BUSINESS
+  contact          String? // optional contact info
+  imageUrl         String? // public URL if a photo is attached
+  cloudStoragePath String?
+  isApproved       Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([createdAt])
+  @@index([category])
+}
+
+// Water Tower / Train Community Scrapbook — shared photos of Anna
+model GalleryPhoto {
+  id               String   @id @default(cuid())
+  caption          String?
+  cloudStoragePath String
+  imageUrl         String // public URL
+  category         String   @default("WATER_TOWER") // WATER_TOWER, TRAIN, DOWNTOWN, COMMUNITY, EVENTS
+  authorName       String   @default("Anna Neighbor")
+  authorId         String?
+  isApproved       Boolean  @default(true)
+  likes            Int      @default(0)
+  createdAt        DateTime @default(now())
+
+  @@index([category, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public Welcome Board — sentiment-filtered wall of newcomer intros
+// ─────────────────────────────────────────────────────────────
+model WelcomeBoardPost {
+  id           String   @id @default(cuid())
+  authorId     String?
+  authorName   String   @default("New Neighbor")
+  movedFrom    String?
+  neighborhood String?
+  intro        String // warm intro (optionally AI-polished)
+  aiGenerated  Boolean  @default(false)
+  sentiment    String   @default("warm") // warm | neutral | blocked
+  isApproved   Boolean  @default(true)
+  likes        Int      @default(0)
+  // Reply-SLA notification tracking (so an alert only fires once per stage)
+  notified12h  Boolean  @default(false)
+  notified20h  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  replies WelcomeBoardReply[]
+
+  @@index([isApproved, createdAt])
+}
+
+// In-app notifications (bell inbox). Aggregate-safe: each row is scoped to one recipient user.
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String   @default("info") // info | intro_sla | intro_sla_urgent
+  title     String
+  body      String?
+  linkUrl   String?
+  isRead    Boolean  @default(false)
+  isUrgent  Boolean  @default(false)
+  // Optional idempotency key so a trigger fired twice creates only one row
+  // (e.g. a volunteer signup confirmation). Null for legacy/ad-hoc notices.
+  // De-dup is enforced in application code (lib/notifications.ts), not a DB
+  // unique constraint, to keep schema changes additive & non-destructive.
+  dedupeKey String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+}
+
+// A civic volunteer opportunity posted by a verified local org/business.
+// Residents sign up (capacity-safe). Keeps Anna's helping economy local.
+model VolunteerOpportunity {
+  id          String   @id @default(cuid())
+  title       String
+  orgName     String // the hosting organization, shown to residents
+  description String?
+  location    String   @default("Anna, TX")
+  dateString  String? // human-friendly when, mirrors Event.dateString
+  capacity    Int      @default(0) // 0 === no cap (open)
+  contactNote String? // how volunteers will be contacted / what to bring
+  status      String   @default("active") // active | closed
+  postedById  String // the Provider who posted it
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  postedBy Provider          @relation(fields: [postedById], references: [id])
+  signups  VolunteerSignup[]
+
+  @@index([status, createdAt])
+  @@index([postedById])
+}
+
+model VolunteerSignup {
+  id            String   @id @default(cuid())
+  opportunityId String
+  userId        String
+  note          String? // optional note from the volunteer
+  status        String   @default("CONFIRMED") // CONFIRMED | CANCELLED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  opportunity VolunteerOpportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  user        User                 @relation("UserVolunteerSignups", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([opportunityId, userId])
+  @@index([userId, status])
+}
+
+model WelcomeBoardReply {
+  id         String   @id @default(cuid())
+  postId     String
+  authorId   String?
+  authorName String   @default("Anna Neighbor")
+  body       String
+  sentiment  String   @default("warm")
+  isApproved Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  post WelcomeBoardPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Civic micro-features (B2G) — resident issue reports + city alerts
+// ─────────────────────────────────────────────────────────────
+model CivicIssueReport {
+  id               String   @id @default(cuid())
+  category         String   @default("POTHOLE") // POTHOLE, STREETLIGHT, WATER, DEBRIS, SIGNAGE, PARK, OTHER
+  location         String
+  description      String
+  reporterName     String   @default("Anna Resident")
+  reporterId       String?
+  contact          String?
+  imageUrl         String?
+  cloudStoragePath String?
+  status           String   @default("SUBMITTED") // SUBMITTED, ACKNOWLEDGED, IN_PROGRESS, RESOLVED
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([category])
+}
+
+model CivicAlert {
+  id          String   @id @default(cuid())
+  title       String
+  message     String
+  level       String   @default("INFO") // INFO, WARNING, CRITICAL
+  actionLabel String?
+  actionUrl   String?
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Resident-to-resident neighbor matching — lightweight "waves"
+// ─────────────────────────────────────────────────────────────
+model NeighborWave {
+  id         String   @id @default(cuid())
+  fromUserId String
+  fromName   String   @default("A Neighbor")
+  toUserId   String
+  message    String?
+  createdAt  DateTime @default(now())
+
+  @@unique([fromUserId, toUserId])
+  @@index([toUserId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Multi-town white-label — "bring it to your town" B2G lead funnel
+// ─────────────────────────────────────────────────────────────
+model TownRequest {
+  id          String   @id @default(cuid())
+  townName    String
+  state       String?
+  contactName String
+  email       String
+  role        String? // resident | business | city_official | chamber | investor
+  message     String?
+  status      String   @default("NEW") // NEW, CONTACTED, QUALIFIED, CLOSED
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Ask Sierra — In-App AI Anna Expert
+// Knowledge ingestion sources (uploaded files + scraped URLs) and the
+// evolving, fact-based knowledge base the daily sync job compiles.
+// ─────────────────────────────────────────────────────────────
+model SierraSource {
+  id               String    @id @default(cuid())
+  type             String // FILE | URL
+  name             String
+  url              String? // scrape URL, or public file URL
+  cloudStoragePath String?
+  contentType      String?
+  sizeBytes        Int?
+  status           String    @default("PENDING") // PENDING | SYNCED | ERROR
+  note             String?
+  extractedChars   Int       @default(0)
+  extractedText    String? // last scraped/extracted text, used to rebuild Sierra's knowledge on demand
+  addedById        String?
+  addedByName      String    @default("Admin")
+  lastSyncedAt     DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([type])
+}
+
+model SierraKnowledge {
+  id          String   @id @default(cuid())
+  namespace   String   @default("anna-core")
+  category    String // PROFILES | STORIES | BILLBOARD | DIRECTORY | KIND_DEEDS | CIVIC | SOURCES | DIGEST
+  title       String
+  content     String
+  recordCount Int      @default(0)
+  syncedAt    DateTime @default(now())
+
+  @@unique([namespace, category])
+  @@index([syncedAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([email])
+  @@index([expiresAt])
+}
+
+// One-time login verification code (email MFA step-up). Stores only a hash of
+// the 6-digit code. A row is created after a correct password when the account
+// requires extra login security; it is consumed the moment the code is used.
+model LoginChallenge {
+  id         String    @id @default(cuid())
+  email      String
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  @@index([email, consumedAt])
+  @@index([expiresAt])
+}
+
+model JobClick {
+  id        String   @id @default(cuid())
+  jobKey    String
+  jobTitle  String
+  company   String?
+  source    String   @default("external")
+  url       String
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([jobKey])
+  @@index([source])
+  @@index([createdAt])
+}
+
+enum SourceTier {
+  OFFICIAL
+  INSTITUTIONAL
+  COMMUNITY
+  AGGREGATOR
+}
+
+enum GrowthStatus {
+  VERIFIED
+  REPORTED
+  UNVERIFIED
+}
+
+enum Publishability {
+  INTERNAL_ONLY
+  PUBLIC_DRAFT_OK
+  PUBLIC_PUBLISHABLE
+}
+
+enum GrowthSentiment {
+  POSITIVE
+  NEUTRAL
+  NEGATIVE
+}
+
+model GrowthStory {
+  id                   String           @id @default(cuid())
+  title                String
+  summary              String
+  category             String           @default("General") // Retail, Housing, Infrastructure, Civic, Commercial, Community, General
+  sourceUrl            String?
+  sourceType           String? // City Announcement, Local Profile, Facebook, News, Other
+  sourceTier           SourceTier       @default(COMMUNITY)
+  status               GrowthStatus     @default(UNVERIFIED)
+  publishability       Publishability   @default(INTERNAL_ONLY)
+  verificationNotes    String?
+  corroboratingSources String?
+  sentiment            GrowthSentiment?
+  tags                 String[]         @default([])
+  submittedByName      String?
+  submittedByEmail     String?
+  submittedByUserId    String?
+  reviewedBy           String?
+  reviewedAt           DateTime?
+  publishedAt          DateTime?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([status])
+  @@index([publishedAt])
+  @@index([category])
+}
+
+// ─────────────────────────────────────────────────────────────
+// W2-00 · Analytics instrumentation layer (Work Order #2)
+// Privacy: aggregate-only by design. Stores actor ROLE + internal
+// userId (for one-per-account dedupe) — never names/emails/free text.
+// ─────────────────────────────────────────────────────────────
+enum AnalyticsEventType {
+  LISTING_VIEW
+  LISTING_CLICK
+  OFFER_VIEW
+  OFFER_CLAIM
+  OFFER_REDEMPTION
+  EVENT_RSVP
+  JOB_VIEW
+  SIERRA_QUESTION
+  SURVEY_RESPONSE
+  VOLUNTEER_SIGNUP
+  MAGAZINE_VIEW
+  MAGAZINE_FRAME_CLAIM
+  MAGAZINE_CONTRIB_SUBMIT
+  INTRO_POSTED
+  INTRO_REPLIED
+  CARD_VIEW
+  VCARD_DOWNLOAD
+  CARD_SHARE
+  QR_SCAN
+  SEAL_SCAN
+  // ── Passive harvest layer (Boots on the Ground) ──
+  PAGE_VIEW
+  ELEMENT_CLICK
+  DWELL
+  SEARCH_QUERY
+  SCROLL_DEPTH
+}
+
+model AnalyticsEvent {
+  id         String             @id @default(cuid())
+  type       AnalyticsEventType
+  actorRole  String             @default("anonymous") // NEWCOMER|RESIDENT|PROVIDER|ADMIN|anonymous
+  userId     String? // internal id only — never surfaced in aggregates
+  entityType String? // provider | carePackage | survey | job | welcomeBoardPost | magazine | event
+  entityId   String?
+  topic      String? // categorization bucket for SIERRA_QUESTION (schools, utilities, city_services, ...)
+  // ── Passive harvest layer. All optional/additive. ──
+  path       String? // route the signal came from, query string stripped
+  dwellMs    Int? // ms of attention on that path (DWELL only)
+  anonId     String? // rotating pseudonymous visitor id — no PII, cookie-scoped
+  elementData Json? // { tag, role, href, label } for ELEMENT_CLICK — never free text from inputs
+  createdAt  DateTime           @default(now())
+
+  @@index([type, createdAt])
+  @@index([entityType, entityId])
+  @@index([topic, createdAt])
+  @@index([createdAt])
+  @@index([path, createdAt])
+  @@index([anonId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ANNA LIFE MAGAZINE — the frame-based, deadline-driven content engine.
+// Structural model borrows from Typst (layout = explicit set-rule JSON on each
+// frame) and Editor.js (content = clean typed block JSON). Sierra runs the
+// editorial layer. Payouts are admin-approved manual (no auto money movement).
+// ─────────────────────────────────────────────────────────────
+enum MagazineIssueStatus {
+  DRAFT // being set up, not public
+  OPEN // claim board live — creators may claim frames, ads on sale
+  CONTENT_LOCKED // 25th: no new claims/drafts; editing + ad sales continue
+  PROOF // 30th: layout/proof; everything frozen
+  PUBLISHED // 1st: live issue
+  ARCHIVED
+}
+
+enum MagazineFrameType {
+  PHOTO // image-led frame (cover, photo essay)
+  LONGFORM // multi-page feature
+  COLUMN // recurring column
+  PROFILE // spotlight / kind deed
+  DATA // auto data spread (survey results)
+  LISTINGS // auto digest (jobs, nonprofits, classifieds)
+}
+
+enum MagazineFrameFillMode {
+  CLAIMABLE // a creator claims and writes it (pays a revenue share)
+  AUTO // auto-filled from live platform content (no payout)
+  CIVIC // reserved for city / council voice (no payout)
+}
+
+enum MagazineFrameStatus {
+  EMPTY // open to claim
+  CLAIMED // a creator owns it, no draft yet
+  DRAFT_IN // creator submitted a draft
+  IN_REVIEW // Sierra/admin reviewing
+  EDITED // edited & fact-checked, ready
+  LOCKED // final, cannot change
+}
+
+enum MagazineAdSize {
+  FULL
+  HALF
+  QUARTER
+  EIGHTH // Coupon Clipper 1/8 page
+  SIXTEENTH // Business-card 1/16 page
+}
+
+enum MagazineAdStatus {
+  OPEN
+  RESERVED
+  SOLD
+}
+
+enum MagazinePayoutStatus {
+  PENDING // computed, awaiting admin approval
+  APPROVED // admin approved the amount
+  PAID // admin marked as paid (manual money movement)
+}
+
+// ---- Editorial covenant (byline protection) ----
+// Every submission is version-stamped. The first submission is an immutable
+// ORIGINAL, preserved forever with its timestamp. All later edits are appended
+// as REVISIONs; editing never rewrites history and never changes authorship.
+enum MagazineVersionKind {
+  ORIGINAL // the author's first submission — immutable, never overwritten
+  REVISION // any later edit; appended, authorship carried forward unchanged
+}
+
+// Credit lines are kept separate from the content and from each other, so an
+// editor's work is credited as editing — not authorship.
+enum MagazineCreditRole {
+  WRITTEN_BY // the byline / author(s) — protected
+  EDITED_BY // editing is credited as editing, never as authorship
+  ADDITIONAL_REPORTING
+  PHOTOGRAPHY
+  AI_ASSISTED // disclosed AI assistance
+}
+
+enum MagazineCreditStatus {
+  PROPOSED // suggested, not yet live (byline changes wait here for author approval)
+  APPROVED // live on the piece
+  REJECTED // declined by the affected author
+}
+
+enum ContributorType {
+  WRITER
+  JOURNALIST
+  ARTIST
+  PHOTOGRAPHER
+  INTERVIEWER
+  HISTORIAN
+  COLUMNIST
+  STUDENT
+  CORRESPONDENT
+  OTHER
+}
+
+// Which side of the wall an applicant is joining. Editorial and advertising
+// are kept strictly separate: a REVENUE_PARTNER can never buy editorial coverage.
+enum ContributorProgram {
+  CONTRIBUTOR // Anna LIFE Contributor Network (editorial)
+  REVENUE_PARTNER // Anna LIFE Revenue Partner Program (advertising / sponsorship sourcing)
+}
+
+enum MagazineContributorStatus {
+  PENDING // application submitted, awaiting review
+  APPROVED // vetted contributor, may claim sections
+  REJECTED // not accepted
+  PAUSED // previously approved, temporarily inactive
+}
+
+// Application + agreement record for the Anna Life contributor program.
+// The commission mechanics already live in MagazineFrame.weight / MagazinePayout;
+// this model is the vetting + agreement layer (independent-contractor terms,
+// W-9 acknowledgment, first-right understanding).
+model MagazineContributor {
+  id     String  @id @default(cuid())
+  userId String? // optional link to a platform account
+
+  program      ContributorProgram @default(CONTRIBUTOR)
+  name         String
+  email        String             @unique
+  phone        String?
+  type         ContributorType    @default(WRITER)
+  bio          String? // experience / background
+  portfolioUrl String?
+  pitch        String? // what they'd like to cover / what they can source
+
+  // Agreement acknowledgments (required set varies by program)
+  agreedContractorTerms  Boolean @default(false) // independent contractor, not employment
+  commissionAcknowledged Boolean @default(false) // paid from ad-revenue pool after publication + approval
+  w9Acknowledged         Boolean @default(false) // will provide a W-9 before first payout
+  firstRightAgreed       Boolean @default(false) // first-publication rights + license (contributor); not blanket exclusivity
+  editorialFirewallAck   Boolean @default(false) // revenue partners: cannot sell/promise editorial coverage or rankings
+  writtenAgreementAck    Boolean @default(false) // will sign a written agreement (rights, pay, attribution, corrections, conduct, confidentiality, termination)
+
+  status    MagazineContributorStatus @default(PENDING)
+  adminNote String?
+
+  createdAt  DateTime  @default(now())
+  reviewedAt DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  pressCredential PressCredential? // issued only after approval, by an editor
+
+  @@index([status, createdAt])
+}
+
+model MagazineIssue {
+  id            String              @id @default(cuid())
+  slug          String              @unique // e.g. "2026-08"
+  tenantId      String? // multi-tenant scope (backfilled to anna-tx); additive, nullable for safety
+  monthLabel    String // "August 2026"
+  year          Int
+  month         Int // 1-12
+  status        MagazineIssueStatus @default(DRAFT)
+  theme         String?
+  coverPhotoUrl String?
+
+  // Monthly clock (Typst-style deadline rules)
+  claimOpenAt   DateTime?
+  contentLockAt DateTime? // 25th
+  adLockAt      DateTime? // 25th
+  proofAt       DateTime? // 30th
+  publishAt     DateTime? // 1st
+
+  // Payout policy snapshot (percent of ad revenue to creator pool)
+  creatorPoolPct Int @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  frames  MagazineFrame[]
+  adPlots MagazineAdPlot[]
+  payouts MagazinePayout[]
+  ledger  MagazineIssueLedger[]
+
+  @@index([status, publishAt])
+  @@index([year, month])
+}
+
+// Persistent status ledger (the "planning-with-files" pattern): one row per
+// state change so Sierra and admins can reconstruct issue state without relying
+// on conversation memory. Append-only by convention.
+model MagazineIssueLedger {
+  id      String        @id @default(cuid())
+  issueId String
+  issue   MagazineIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  entity    String // "issue" | "frame:<key>" | "adPlot:<label>" | "payout:<recipient>"
+  fromState String?
+  toState   String?
+  note      String?
+  actor     String  @default("system") // "admin" | "sierra" | "system"
+
+  createdAt DateTime @default(now())
+
+  @@index([issueId, createdAt])
+}
+
+model MagazineFrame {
+  id      String        @id @default(cuid())
+  issueId String
+  issue   MagazineIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  key       String // stable slot key, e.g. "feature_story"
+  title     String
+  subtitle  String?
+  frameType MagazineFrameType
+  fillMode  MagazineFrameFillMode @default(CLAIMABLE)
+  weight    Int                   @default(0) // payout shares (feature 3 / column 2 / spotlight 1)
+
+  // Typst-modeled layout rules (explicit "set rules" for this frame)
+  layout Json // { pageSpan, columns, wordTarget, imageSlots, order }
+  order  Int  @default(0)
+
+  status MagazineFrameStatus @default(EMPTY)
+
+  // Claim
+  claimedById   String?
+  claimedByName String?
+  claimedAt     DateTime?
+
+  // Content — Editor.js-style typed block document
+  blocks    Json? // { time, version, blocks: [{ type, data }] }
+  wordCount Int   @default(0)
+
+  // Editorial layer
+  editorNotes     String?
+  factCheckStatus String  @default("UNCHECKED") // UNCHECKED | FLAGGED | VERIFIED
+
+  // Copyright covenant: the author retains copyright; Anna LIFE takes only a
+  // non-exclusive first-publication license. Set from the ORIGINAL submission.
+  copyrightHolderId   String?
+  copyrightHolderName String?
+  licenseType         String  @default("NON_EXCLUSIVE_FIRST_PUBLICATION")
+
+  versions MagazineSubmissionVersion[]
+  credits  MagazineCredit[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, key])
+  @@index([issueId, status])
+  @@index([claimedById])
+}
+
+// Append-only submission history for a frame. The row with kind=ORIGINAL is
+// written exactly once and is never updated or deleted — it is the permanent,
+// timestamped proof of what the author first turned in.
+model MagazineSubmissionVersion {
+  id      String        @id @default(cuid())
+  frameId String
+  frame   MagazineFrame @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  issueId String
+
+  versionNo Int
+  kind      MagazineVersionKind @default(REVISION)
+
+  // The person whose work this is. Captured from the ORIGINAL and carried
+  // forward unchanged on every REVISION — editing never reassigns it.
+  authorId   String?
+  authorName String
+
+  // Who actually saved this particular snapshot (author on ORIGINAL, an editor
+  // on a REVISION). Recorded for transparency, separate from authorship.
+  savedById   String?
+  savedByName String
+
+  blocks    Json
+  wordCount Int     @default(0)
+  note      String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([frameId, versionNo])
+  @@index([frameId, createdAt])
+}
+
+// A single credit line on a piece. Byline (WRITTEN_BY) changes require the
+// affected author's affirmative approval before they can go live.
+model MagazineCredit {
+  id      String        @id @default(cuid())
+  frameId String
+  frame   MagazineFrame @relation(fields: [frameId], references: [id], onDelete: Cascade)
+  issueId String
+
+  role       MagazineCreditRole
+  personId   String?
+  personName String
+  detail     String? // e.g. "Draft outline AI-assisted, human-reported and edited"
+  order      Int                  @default(0)
+  status     MagazineCreditStatus @default(APPROVED)
+
+  // Byline protection
+  requiresAuthorApproval Boolean   @default(false)
+  approvedByAuthor       Boolean   @default(false)
+  approvedAt             DateTime?
+
+  // Who proposed this credit / change (an editor or admin)
+  proposedById   String?
+  proposedByName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([frameId, role])
+  @@index([personId, status])
+}
+
+model MagazineAdPlot {
+  id      String        @id @default(cuid())
+  issueId String
+  issue   MagazineIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  size       MagazineAdSize
+  label      String // "Full Page A", "Half Page 2", ...
+  priceCents Int
+  order      Int              @default(0)
+  status     MagazineAdStatus @default(OPEN)
+
+  // Buyer
+  providerId       String?
+  businessName     String?
+  artworkUrl       String?
+  artworkCloudPath String?
+  soldAt           DateTime?
+  notes            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([issueId, status])
+}
+
+model MagazinePayout {
+  id      String        @id @default(cuid())
+  issueId String
+  issue   MagazineIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  frameId         String? // the frame this payout is for (null = adjustment)
+  frameKey        String?
+  recipientName   String
+  recipientUserId String?
+
+  shares      Int                  @default(0)
+  amountCents Int                  @default(0)
+  status      MagazinePayoutStatus @default(PENDING)
+  method      String? // how it was paid (manual)
+  note        String?
+  approvedAt  DateTime?
+  paidAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([issueId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Anna LIFE Digital PRESS Card (Work Order — July 2026)
+//
+// A public, verifiable, revocable editorial credential issued to APPROVED
+// Anna LIFE contributors. It sits adjacent to the existing digital business-
+// card engine and reuses its patterns (public slug, QR, vCard, scan
+// analytics, lit/grey contact icons).
+//
+// PHASE 1-2 SCOPE (this build): credential foundation + public card + admin
+// issuance/lifecycle + audit trail. Later phases (specified, not built):
+// contributor self-edit dashboard, full Request-This-Contributor case
+// workflow, article credits + portfolio feed, ranking snapshots, wallet passes.
+//
+// A contributor can NEVER self-assign level, dates, credential ID, status,
+// residency-verification, published-work count, or ranking. Those are set only
+// by an accountable human editor/admin and every change is audited.
+// ---------------------------------------------------------------------------
+
+enum PressLevel {
+  PROVISIONAL // silver / pearl — supervised publication stage
+  CERTIFIED // metallic-gold frame + seal
+  SENIOR // gold with senior ribbon
+  CONTRIBUTING_EDITOR // black / ivory / gold — invite only
+}
+
+enum PressStatus {
+  ACTIVE // verified and active
+  SUSPENDED // temporarily inactive (muted amber)
+  EXPIRED // certification lapsed (grey)
+  REVOKED // no longer valid (red status notice)
+}
+
+model PressCredential {
+  id            String @id @default(cuid())
+  contributorId String @unique // 1:1 with the vetted MagazineContributor record
+  credentialId  String @unique // human-facing ID printed on the card, e.g. AL-2026-0007
+  slug          String @unique // stable public route: /anna-life/press/{slug}
+
+  level  PressLevel  @default(PROVISIONAL)
+  status PressStatus @default(ACTIVE)
+
+  // Public display fields — every direct-contact field is OPT-IN. A null field
+  // renders as a greyed, disabled icon with accessible helper text.
+  headshotUrl   String?
+  publicBio     String? // 75-200 word public biography
+  publicPhone   String? // approved public/business number (opt-in)
+  publicEmail   String? // approved public email or Anna LIFE alias (opt-in)
+  publicWebsite String? // website / portfolio
+  publicSocial  String? // one approved professional social link
+  beats         String? // comma-separated coverage beats shown on the card
+
+  acceptingRequests Boolean @default(true) // Request This Contributor enabled
+  residencyVerified Boolean @default(false) // Anna, TX residency confirmed by an editor
+
+  // Credential lifecycle (editor-controlled only)
+  issuedAt         DateTime  @default(now())
+  approvedAt       DateTime?
+  expiresAt        DateTime? // certification term (typically 12 months)
+  lastVerifiedAt   DateTime  @default(now())
+  approvedByUserId String?
+  suspendedAt      DateTime?
+  revokedAt        DateTime?
+
+  publicStatusMessage  String? // optional public notice for suspended/expired/revoked
+  internalStatusReason String? // private editor note — never shown publicly
+
+  scanCount Int @default(0) // lightweight QR/scan counter (privacy-respecting)
+  viewCount Int @default(0) // card page views
+
+  // Governed self-edit: a contributor may PROPOSE changes to their public fields.
+  // Nothing here goes live until an editor approves it (copies pending -> public).
+  hasPendingEdits    Boolean   @default(false)
+  pendingSubmittedAt DateTime?
+  pendingHeadshotUrl String?
+  pendingBio         String?
+  pendingPhone       String?
+  pendingEmail       String?
+  pendingWebsite     String?
+  pendingSocial      String?
+  pendingBeats       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contributor      MagazineContributor    @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+  audits           PressCredentialAudit[]
+  coverageRequests CoverageRequest[]
+
+  @@index([status, level])
+}
+
+model PressCredentialAudit {
+  id           String @id @default(cuid())
+  credentialId String // FK to PressCredential.id (internal id, not the public credentialId)
+
+  action            String // ISSUE | RENEW | SUSPEND | RESTORE | EXPIRE | REVOKE | UPDATE
+  previousValue     String?
+  newValue          String?
+  performedByUserId String?
+  reason            String?
+
+  createdAt DateTime @default(now())
+
+  credential PressCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([credentialId, createdAt])
+}
+
+enum CoverageRequestStatus {
+  NEW
+  SCREENING
+  FORWARDED
+  ACCEPTED
+  DECLINED
+  COMPLETED
+}
+
+// A "Request This Contributor" case. Created from the public PRESS card, then
+// screened by the editorial desk before the contributor is ever contacted.
+model CoverageRequest {
+  id              String @id @default(cuid())
+  credentialId    String // FK to PressCredential.id
+  contributorName String // denormalized for admin convenience
+
+  requesterName  String
+  requesterEmail String
+  requesterPhone String?
+  organization   String?
+  topic          String? // event / story / business / interview / other
+  message        String
+
+  status       CoverageRequestStatus @default(NEW)
+  internalNote String? // private editorial note — never shown to requester or public
+
+  handledByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  credential PressCredential @relation(fields: [credentialId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([credentialId, createdAt])
+}
+
+// ============================================================================
+// ANNA OPPORTUNITY CENTER (EDC ARM)
+// Shared case data model for the Business Assistance loop:
+// business asks for help -> platform triages -> business consents to EDC
+// visibility -> EDC reviews -> assigns owner -> makes referral -> records
+// outcome -> rolls up into a monthly brief.
+// ============================================================================
+
+enum AssistanceNeedType {
+  CUSTOMERS
+  EMPLOYEES
+  CONSTRUCTION
+  SPACE
+  FUNDING
+  PERMITS
+  VENDORS
+  OTHER
+}
+
+enum CasePriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum CaseStatus {
+  NEW
+  TRIAGED
+  ASSIGNED
+  IN_PROGRESS
+  REFERRED
+  RESOLVED
+  CLOSED
+}
+
+enum CaseOutcomeType {
+  RETAINED
+  REFERRAL_COMPLETED
+  POSITION_FILLED
+  FOUNDER_LAUNCHED
+  RECRUITED
+  EVENT_ACTIVATED
+  NO_RESULT
+  CLOSED_NO_ACTION
+}
+
+// The spine of the Opportunity Center: a single request for help from a local
+// business. Only surfaces to the EDC queue once consentToEDC is true.
+model BusinessAssistanceCase {
+  id                String  @id @default(cuid())
+  providerId        String
+  businessName      String // denormalized for queue convenience
+  submittedByUserId String?
+
+  needType AssistanceNeedType
+
+  summary String
+  details String?
+
+  priority CasePriority @default(MEDIUM)
+  status   CaseStatus   @default(NEW)
+
+  // Consent gate — the case is only visible to the EDC after the business
+  // explicitly opts in to share the request with the Anna Opportunity Center.
+  consentToEDC Boolean   @default(false)
+  consentAt    DateTime?
+
+  assignedToUserId String?
+  nextAction       String?
+  dueDate          DateTime?
+
+  outcomeType CaseOutcomeType?
+  outcomeNote String?
+  resolvedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  provider    Provider @relation("ProviderCases", fields: [providerId], references: [id], onDelete: Cascade)
+  submittedBy User?    @relation("CaseSubmitter", fields: [submittedByUserId], references: [id])
+  assignedTo  User?    @relation("CaseAssignee", fields: [assignedToUserId], references: [id])
+
+  notes     CaseNote[]
+  referrals CaseReferral[]
+  audit     CaseAuditLog[]
+
+  @@index([status, createdAt])
+  @@index([providerId])
+  @@index([consentToEDC, status])
+}
+
+model CaseNote {
+  id           String   @id @default(cuid())
+  caseId       String
+  authorUserId String?
+  authorName   String
+  body         String
+  isInternal   Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  assistanceCase BusinessAssistanceCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+}
+
+model CaseReferral {
+  id             String   @id @default(cuid())
+  caseId         String
+  referredTo     String // Chamber / City / ArtsCouncil / Mentor / Other
+  referredToName String?
+  note           String?
+  status         String   @default("SENT")
+  createdAt      DateTime @default(now())
+
+  assistanceCase BusinessAssistanceCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+}
+
+model CaseAuditLog {
+  id          String   @id @default(cuid())
+  caseId      String
+  actorUserId String?
+  actorName   String?
+  action      String
+  detail      String?
+  createdAt   DateTime @default(now())
+
+  assistanceCase BusinessAssistanceCase @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, createdAt])
+}
+
+// ============================================================================
+// UNIFIED IDENTITY / MULTI-ROLE (Slice 1)
+// One Anna identity holds many verified roles. Additive layer on top of the
+// existing single `User.role` field — the primary role still drives existing
+// middleware redirects; these assignments unlock dashboard tabs in "My Anna".
+// ============================================================================
+
+enum CommunityRole {
+  RESIDENT
+  BUSINESS
+  NONPROFIT
+  ARTIST
+  PRESS
+  CITY_COUNCIL
+  EDC
+  CITY_STAFF
+  VOLUNTEER
+  SPONSOR
+}
+
+enum RoleAssignmentStatus {
+  DRAFT
+  SUBMITTED
+  UNDER_REVIEW
+  VERIFIED
+  DENIED
+  SUSPENDED
+  EXPIRED
+}
+
+// Graduated verification ladder (verification != authorization).
+enum VerificationLevel {
+  SELF_DECLARED
+  OWNERSHIP_VERIFIED
+  EDITORIALLY_APPROVED
+  INSTITUTIONALLY_CONFIRMED
+  PRIVILEGED_ADMIN
+}
+
+model UserRoleAssignment {
+  id                    String               @id @default(cuid())
+  userId                String
+  role                  CommunityRole
+  status                RoleAssignmentStatus @default(SUBMITTED)
+  verification          VerificationLevel    @default(SELF_DECLARED)
+  orgName               String? // linked org / business / nonprofit name
+  title                 String? // e.g. "Council Member, Place 4", "Founder"
+  note                  String? // applicant's justification / note
+  reviewerNote          String? // admin note on approve/deny
+  profile               Json? // role-specific workspace profile (bio, links, needs, etc.)
+  proofUrl              String? // applicant-supplied proof link for verification level-up
+  proofNote             String? // applicant note describing their proof
+  verificationRequested VerificationLevel? // target tier the user is requesting (level-up)
+  reviewedByUserId      String?
+  reviewedAt            DateTime?
+  submittedAt           DateTime             @default(now())
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+
+  user User @relation("UserRoles", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([userId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Citynest — City Manager Command Center (Slice 1)
+// The Department Agent Swarm: a directive (meeting transcript, Council
+// directive, or department plan) is dropped in, AI organizes it into
+// departmental tasks with drafted first-steps that leave the Manager's desk.
+// ─────────────────────────────────────────────────────────────
+model CityDirective {
+  id            String   @id @default(cuid())
+  title         String
+  sourceType    String   @default("MEETING") // MEETING, COUNCIL, PLAN, MEMO
+  rawText       String
+  summary       String? // AI executive summary of the whole directive
+  status        String   @default("PROCESSING") // PROCESSING, ORGANIZED, FAILED
+  createdById   String?
+  createdByName String?  @default("City Manager")
+  taskCount     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  tasks CityTask[]
+
+  @@index([status, createdAt])
+}
+
+model CityTask {
+  id          String   @id @default(cuid())
+  directiveId String
+  department  String   @default("General")
+  title       String
+  detail      String?
+  priority    String   @default("MEDIUM") // HIGH, MEDIUM, LOW
+  status      String   @default("TODO") // TODO, IN_PROGRESS, DONE
+  draftOutput String? // AI-drafted first-step / work product for this task
+  dueHint     String?
+  orderIndex  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  directive CityDirective @relation(fields: [directiveId], references: [id], onDelete: Cascade)
+
+  @@index([directiveId])
+  @@index([department, status])
+  @@index([status])
+}
+
+// ==== Mona Sierra Artist Portal: structured, queryable artist intelligence ====
+// Personal Branding Profile answers live here (NOT in the flexible role-notebook JSON).
+model ArtistStudioProfile {
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  // Personal Branding Profile (Mona Sierra questionnaire) — structured answers
+  artistTypes       String[]  @default([]) // painter, muralist, teacher, consultant, maker...
+  mediums           String[]  @default([]) // watercolor, oil, digital, ceramic...
+  products          String[]  @default([]) // originals, prints, commissions, classes, murals...
+  disciplineSummary String? // "What you make" one-liner
+  bio               String?
+  artistStatement   String?
+  brandWords        String[]  @default([]) // three words that feel like you
+  audience          String? // who is most moved by your work
+  goals             String[]  @default([]) // sell, teach, commissions, public art, collaborate...
+  availability      String? // hours/month or "open for"
+  boundaries        String? // what you'd never want your work to become
+  favoriteThemes    String? // what you return to again and again
+  status            String    @default("DRAFT") // DRAFT | APPROVED
+  completeness      Int       @default(0) // 0-100
+  // ---- Living public artist page (Mona Sierra Living Studio) ----
+  originStory       String? // deeper story, in the artist's own words
+  headshotUrl       String? // artist photo for their public page
+  slug              String? // public URL: /arts/studio/{slug}; auto-generated on publish (uniqueness enforced in app)
+  publicEnabled     Boolean   @default(false) // artist chose to make their page public
+  publishedAt       DateTime? // when they first published
+  revenueStreams    String[]  @default([]) // readiness-ladder offerings the artist chose (keys from lib/arts/revenue-streams)
+  // Membership tier matrix (lib/arts/membership-tiers): EMERGING | STUDIO | EXECUTIVE.
+  // Governs per-item price cap, product volume, allowed categories, and the
+  // LLC/EIN verification gate. Defaults to the entry tier.
+  membershipTier    String    @default("EMERGING")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation("UserArtistStudio", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([slug])
+}
+
+model ArtworkPiece {
+  id               String  @id @default(cuid())
+  userId           String
+  title            String
+  caption          String?
+  medium           String?
+  cloudStoragePath String?
+  imageUrl         String
+  isFavorite       Boolean @default(false) // artist's own favorite piece
+  forSale          Boolean @default(false)
+  price            Int? // cents; optional
+  orderIndex       Int     @default(0)
+
+  // Interim external store link (Printify / Shopify / artist website) used to
+  // buy a PRINT/reproduction until a local print-shop integration is live.
+  // Originals are purchased on-site, so this is typically empty for originals.
+  externalStoreUrl String?
+
+  // Original work details
+  isOriginal Boolean @default(true) // original vs. print/reproduction
+  widthIn    Float? // width in inches
+  heightIn   Float? // height in inches
+  depthIn    Float? // depth in inches (for 3D work)
+
+  // AI search auto-tagging
+  tags String[] @default([])
+
+  // Artist opt-in consent (per original work)
+  allowMagazineUse Boolean @default(false) // may appear in Anna LIFE magazine
+  allowPromoUse    Boolean @default(false) // may appear in promotional / marketing materials
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation("UserArtworks", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isFavorite])
+}
+
+model DoorLikeCount {
+  id        String   @id @default(cuid())
+  doorKey   String   @unique
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// Artist Earnings Ledger — the honest record of every dollar.
+// FOUNDING PROMISE (locked): the platform takes 0% of the artist's
+// markup, ever. Each row splits a sale into named, auditable buckets so
+// the artist always sees exactly what they earned and why. Rows are
+// written by the checkout/fulfillment flow (built in a later slice);
+// until then this table is legitimately empty.
+// ─────────────────────────────────────────────────────────────
+model ArtLedgerEntry {
+  id                String   @id @default(cuid())
+  userId            String // the artist who earns
+  orderId           String? // links to ArtOrder once checkout exists
+  artworkPieceId    String? // optional link to the piece sold
+  description       String // human label, e.g. "Canvas print — 16x20"
+  // ---- the four buckets (all cents) ----
+  printCostCents    Int      @default(0) // iCandy production cost
+  artistMarkupCents Int      @default(0) // the artist's earnings
+  shippingCents     Int      @default(0) // buyer-paid pass-through
+  taxCents          Int      @default(0) // sales tax collected
+  // ---- the honest asterisk ----
+  processingCents   Int      @default(0) // payment-processor fee
+  processingModel   String   @default("PLATFORM_ABSORBED") // PLATFORM_ABSORBED | BUYER_PAID | HYBRID
+  buyerPaidCents    Int      @default(0) // total the buyer was charged
+  platformCostCents Int      @default(0) // what the platform absorbed (Model A)
+  netToArtistCents  Int      @default(0) // MUST equal artistMarkupCents — verified in app
+  isOriginal        Boolean  @default(false)
+  status            String   @default("PENDING") // PENDING | PAID | REFUNDED | CANCELLED
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, status])
+  @@index([orderId])
+}
+
+// ── Slice 2: products derived from one artwork image (via iCandy catalog) ──
+model ArtProduct {
+  id                String   @id @default(cuid())
+  userId            String // artist owner
+  artworkPieceId    String // source image
+  productType       String // iCandy catalog key: canvas | fine_art_print | metal | framed_print | poster | greeting_card | original ...
+  sizeKey           String // catalog size key, e.g. "16x20"
+  label             String // human label snapshot, e.g. "Canvas — 16x20 in"
+  widthIn           Float    @default(0)
+  heightIn          Float    @default(0)
+  printCostCents    Int      @default(0) // iCandy production cost (UNVERIFIED placeholder until real catalog)
+  artistMarkupCents Int      @default(0) // artist earnings (100% theirs)
+  priceCents        Int      @default(0) // buyer subtotal for the item = print + markup
+  costVerified      Boolean  @default(false) // false = placeholder iCandy cost, not real yet
+  mockupUrl         String? // optional generated mockup preview
+  isActive          Boolean  @default(true)
+  isOriginal        Boolean  @default(false)
+  orderIndex        Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId])
+  @@index([artworkPieceId])
+  @@index([userId, isActive])
+}
+
+// ── Slice 4: orders + line items + fulfillment routing ──
+model ArtOrder {
+  id                String   @id @default(cuid())
+  artistUserId      String // the artist who earns
+  buyerUserId       String? // if the buyer was signed in
+  buyerName         String
+  buyerEmail        String
+  buyerPhone        String?
+  shipName          String?
+  shipAddress1      String?
+  shipAddress2      String?
+  shipCity          String?
+  shipState         String?
+  shipZip           String?
+  printCostCents    Int      @default(0)
+  artistMarkupCents Int      @default(0)
+  shippingCents     Int      @default(0)
+  taxCents          Int      @default(0)
+  processingModel   String   @default("PLATFORM_ABSORBED")
+  processingCents   Int      @default(0)
+  buyerPaidCents    Int      @default(0)
+  platformCostCents Int      @default(0)
+  netToArtistCents  Int      @default(0)
+  status            String   @default("PENDING") // PENDING | PAID | REFUNDED | CANCELLED
+  fulfillmentStatus String   @default("UNROUTED") // UNROUTED | ROUTED_TO_ICANDY | IN_PRODUCTION | SHIPPED | DELIVERED
+  fulfillmentRef    String? // iCandy work-order reference (manual until integration)
+  stripeSessionId   String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  items ArtOrderItem[]
+
+  @@index([artistUserId, createdAt])
+  @@index([artistUserId, status])
+  @@index([buyerEmail])
+}
+
+model ArtOrderItem {
+  id                String   @id @default(cuid())
+  orderId           String
+  artistUserId      String
+  artProductId      String?
+  artworkPieceId    String?
+  description       String
+  imageUrl          String?
+  quantity          Int      @default(1)
+  printCostCents    Int      @default(0)
+  artistMarkupCents Int      @default(0)
+  shippingCents     Int      @default(0)
+  taxCents          Int      @default(0)
+  isOriginal        Boolean  @default(false)
+  costVerified      Boolean  @default(false)
+  createdAt         DateTime @default(now())
+
+  order ArtOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([artistUserId])
+}
+
+// ── Slice 5: CRM leads + saveable/recoverable carts ──
+model ArtLead {
+  id             String   @id @default(cuid())
+  artistUserId   String
+  name           String?
+  email          String?
+  phone          String?
+  message        String?
+  source         String   @default("STUDIO") // STUDIO | ARTWORK | CART_RECOVERY | ART_TOWN
+  artworkPieceId String?
+  artProductId   String?
+  status         String   @default("NEW") // NEW | CONTACTED | WON | ARCHIVED
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([artistUserId, createdAt])
+  @@index([artistUserId, status])
+}
+
+model ArtCart {
+  id             String    @id @default(cuid())
+  artistUserId   String
+  buyerEmail     String?
+  buyerName      String?
+  itemsJson      String // serialized cart lines
+  subtotalCents  Int       @default(0)
+  status         String    @default("OPEN") // OPEN | RECOVERED | CONVERTED | ABANDONED
+  recoveryToken  String    @unique @default(cuid())
+  lastRemindedAt DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([artistUserId, status])
+  @@index([buyerEmail])
+}
+
+// ── Slice 9: campaigns / sales / gift cards / festival mode ──
+model ArtCampaign {
+  id              String    @id @default(cuid())
+  artistUserId    String
+  kind            String    @default("SALE") // SALE | GIFT_CARD | FESTIVAL | SPOTLIGHT
+  title           String
+  description     String?
+  discountPercent Int       @default(0) // SALE — applies to artist markup only (artist's own choice)
+  code            String? // optional coupon / gift-card code
+  valueCents      Int       @default(0) // GIFT_CARD — remaining balance
+  active          Boolean   @default(false)
+  startsAt        DateTime?
+  endsAt          DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([artistUserId, active])
+  @@index([code])
+}
+
+model ArtistMilestone {
+  id        String   @id @default(cuid())
+  userId    String
+  key       String
+  badge     String
+  earnedAt  DateTime @default(now())
+  seen      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, key])
+  @@index([userId])
+}
+
+// Made In Anna GiftShop — a visitor "follows" an artist to keep up with them.
+// Additive + view-only: no money, no notifications wired yet. Signed-in users
+// dedupe on (artist, follower); guests may follow with an email so the artist
+// can be reconnected later. Never surfaces the follower list publicly.
+model ArtistFollow {
+  id             String   @id @default(cuid())
+  artistUserId   String // the artist being followed
+  followerUserId String? // set when the follower is signed in
+  followerEmail  String? // set when a guest follows
+  createdAt      DateTime @default(now())
+
+  @@unique([artistUserId, followerUserId])
+  @@index([artistUserId])
+  @@index([followerUserId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// Nonprofit workspace — Brick 1: the organization is its OWN entity
+// (not a personal profile). A person can manage several orgs; an org
+// can have several authorized members. Verification badges say EXACTLY
+// what was verified — never one vague green check.
+// ─────────────────────────────────────────────────────────────
+enum NonprofitEntityType {
+  C3_501 // IRS-recognized 501(c)(3)
+  OTHER_501C // Other 501(c) organization
+  NONPROFIT_CORP // Nonprofit corporation without federal exemption
+  FISCALLY_SPONSORED // Fiscally sponsored project
+  UNINCORPORATED // Unincorporated community initiative
+  SCHOOL_PTA_PTO // School / PTA / PTO
+  FAITH_BASED // Faith-based organization
+  GOVERNMENT_PROGRAM // Government-supported program
+  MUTUAL_AID // Mutual-aid group
+  INFORMAL_GROUP // Informal community group
+}
+
+enum NonprofitMemberRole {
+  OWNER
+  ADMIN
+  EDITOR
+  COMMUNICATIONS
+  VOLUNTEER_MANAGER
+  VIEWER
+}
+
+model NonprofitOrg {
+  id                      String              @id @default(cuid())
+  publicName              String
+  legalName               String?
+  ein                     String? // stored, never auto-public
+  entityType              NonprofitEntityType @default(INFORMAL_GROUP)
+  taxStatus               String? // self-reported
+  determinationLetterPath String? // cloud storage path, not auto-public
+  formationDate           DateTime?
+  serviceArea             String?
+  mission                 String? // one-sentence public mission
+  fullStory               String?
+  populationsServed       String[]
+  website                 String?
+  socials                 String[]
+  contactEmail            String?
+  contactPhone            String?
+  donationUrl             String?
+  logoUrl                 String?
+  coverUrl                String?
+  currentNeed             String?
+  annaActivity            String? // documented local activity
+
+  // Mission Card (Bead 2)
+  slug           String? // public Mission Card address (unique enforced in app)
+  differentiator String? // what makes this org distinct (so orgs don't compete)
+  isPublished    Boolean @default(false) // Mission Card is live/public
+
+  // Verification ladder — each rung states exactly what was verified.
+  vCommunityDeclared Boolean @default(true) // org created its own profile
+  vIdentityVerified  Boolean @default(false) // account manager identity confirmed
+  vEinProvided       Boolean @default(false) // EIN submitted + format validated
+  vOrgMatched        Boolean @default(false) // legal name + org record matched
+  vTaxStatusVerified Boolean @default(false) // current exempt status confirmed
+  vAnnaConnection    Boolean @default(false) // serves / located / active in Anna
+  vAdminReviewed     Boolean @default(false) // admin reviewed the profile
+  vImpactVerified    Boolean @default(false) // selected impact claims supported
+
+  reviewerNote     String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  status           String    @default("ACTIVE") // ACTIVE, SUSPENDED
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  members    NonprofitMember[]
+  helpDrives HelpDrive[]
+  opportunities NonprofitOpportunity[]
+
+  @@index([status])
+}
+
+model NonprofitMember {
+  id        String              @id @default(cuid())
+  orgId     String
+  userId    String
+  role      NonprofitMemberRole @default(OWNER)
+  title     String?
+  createdAt DateTime            @default(now())
+
+  org NonprofitOrg @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([userId])
+  @@index([orgId])
+}
+
+// EDC / CDC Investment & Incentive Register — a real register the Economic
+// Development team keeps. No fabricated deals: rows exist only when EDC staff
+// log a real agreement. Feeds the April 1 Comptroller report and board packets.
+model IncentiveAgreement {
+  id            String    @id @default(cuid())
+  name          String
+  type          String    @default("CHAPTER_380") // CHAPTER_380 | TIRZ | PID | FREEPORT | ABATEMENT | FEE_WAIVER | OTHER
+  entity        String    @default("EDC") // EDC (Type A) | CDC (Type B)
+  businessName  String?
+  status        String    @default("PROPOSED") // PROPOSED | ACTIVE | COMPLETED | EXPIRED | TERMINATED
+  investment    Float?
+  jobsCommitted Int?
+  termYears     Int?
+  startDate     DateTime?
+  clawback      Boolean   @default(false)
+  notes         String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([entity])
+}
+
+// ===========================================================================
+// EDC COMMAND CENTER — Intelligence beads (all additive, honest-data models).
+// No fabricated rows: every record exists only because a human ingested real
+// content or an official logged a real fact. Sierra drafts; humans approve.
+// ===========================================================================
+
+// Bead 6 — Community Signal & Pain-Point Engine (compliant listening).
+// A batch is one ingestion event (e.g. "30 days of Anna Facebook posts").
+model SignalBatch {
+  id          String            @id @default(cuid())
+  label       String
+  sourceType  String            @default("FACEBOOK_PASTE") // FACEBOOK_PASTE | DOC | IMAGE | RESIDENT_FORM | STAFF_NOTE
+  note        String?
+  itemCount   Int               @default(0)
+  status      String            @default("READY") // ANALYZING | READY | ARCHIVED
+  createdById String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  signals     CommunitySignal[]
+
+  @@index([status])
+}
+
+model CommunitySignal {
+  id                 String   @id @default(cuid())
+  batchId            String?
+  source             String   @default("FACEBOOK_PASTE")
+  authorType         String   @default("UNKNOWN") // RESIDENT | BUSINESS | NEWCOMER | NONPROFIT | CITY | UNKNOWN
+  rawText            String
+  imageUrl           String? // uploaded infographic / screenshot (public cloud url)
+  docPath            String? // cloud storage path for a source document
+  category           String   @default("UNSORTED") // pain-point bucket
+  sentiment          String   @default("NEUTRAL") // POSITIVE | NEGATIVE | NEUTRAL | MIXED
+  urgency            String   @default("LOW") // LOW | MEDIUM | HIGH
+  tags               String[]
+  painPoints         String[]
+  entities           String[] // businesses / landmarks mentioned
+  summary            String?
+  isResidentVerified Boolean  @default(false)
+  confidence         Float?
+  status             String   @default("NEW") // NEW | REVIEWED | ACTIONED | ARCHIVED
+  isSample           Boolean  @default(false) // clearly-labeled demo/sample data
+  createdById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  batch SignalBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([category])
+  @@index([sentiment])
+  @@index([status])
+  @@index([batchId])
+}
+
+// Bead 1 — Delta snapshots. Real point-in-time metric captures so the Delta
+// Brief can honestly answer "what changed since the last EDC meeting?"
+model EdcSnapshot {
+  id          String   @id @default(cuid())
+  label       String
+  metrics     Json // tile numbers at capture time
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+// Bead 4 — BR&E Care Queue. PRIVATE attention signals only. A business is
+// NEVER publicly labeled "at risk." Sierra recommends; a human confirms.
+model CareCase {
+  id           String    @id @default(cuid())
+  businessName String
+  providerId   String?
+  reason       String
+  signalType   String    @default("STAFF_NOTED") // STAFF_NOTED | DEMAND_GAP | UNCLAIMED | SIGNAL_INGESTED
+  priority     String    @default("MEDIUM") // LOW | MEDIUM | HIGH
+  status       String    @default("OPEN") // OPEN | CONTACTED | RESOLVED | DISMISSED
+  isSample     Boolean   @default(false) // clearly-labeled demo/sample data
+  consentGiven Boolean   @default(false)
+  ownerContact String?
+  followUpAt   DateTime?
+  notes        String?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status])
+  @@index([priority])
+}
+
+// Bead 3 — Opportunity Foundry. A demand signal turned into a recruitment case,
+// evaluated against Anna's REAL incentive criteria (never a mystery AI score).
+model OpportunityCase {
+  id                String   @id @default(cuid())
+  title             String
+  demandSignal      String
+  category          String?
+  providerCount     Int?
+  workforceNote     String?
+  siteNote          String?
+  anna2050Alignment String?
+  capitalInvestment Float?
+  projectType       String?
+  permanentJobs     Int?
+  wageLevel         String?
+  addedTaxValue     Float?
+  prospectBrief     String? // Sierra-drafted, human-approved
+  grounded          Boolean  @default(true)
+  status            String   @default("EXPLORING") // EXPLORING | QUALIFIED | PURSUING | WON | PASSED
+  isSample          Boolean  @default(false) // clearly-labeled demo/sample data
+  createdById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status])
+}
+
+// Bead 2 — Promise Ledger claim extraction. Claims pulled from a document,
+// each linked to its source, UNVERIFIED until a human reviews.
+model LedgerClaim {
+  id           String    @id @default(cuid())
+  agreementId  String?
+  claimText    String
+  sourceLabel  String? // document name
+  sourcePage   String?
+  metricType   String? // INVESTMENT | JOBS | WAGE | TAX_VALUE | DEADLINE | OTHER
+  metricValue  String?
+  verified     Boolean   @default(false)
+  isSample     Boolean   @default(false) // clearly-labeled demo/sample data
+  verifiedById String?
+  verifiedAt   DateTime?
+  createdById  String?
+  createdAt    DateTime  @default(now())
+
+  @@index([agreementId])
+  @@index([verified])
+}
+
+// Bead 5 — Boardroom Studio. One input, many outputs, with a review lifecycle.
+model BoardroomOutput {
+  id          String   @id @default(cuid())
+  kind        String   @default("BRIEF_60S") // BRIEF_60S | BOARD_PACKET | COUNCIL_PRES | PUBLIC_SUMMARY | PROSPECT_BRIEF | VIDEO_SCRIPT | BOARD_QUESTIONS | WEAK_CLAIMS
+  title       String
+  content     String
+  sourceNote  String?
+  grounded    Boolean  @default(true)
+  status      String   @default("DRAFT") // DRAFT | EVIDENCE_CHECKED | HUMAN_REVIEWED | APPROVED | PUBLISHED | ARCHIVED
+  isSample    Boolean  @default(false) // clearly-labeled demo/sample data
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status])
+  @@index([kind])
+}
+
+// ============================================================
+// OPHELIA GRANT STATION — Anna Arts Council (AAC) funding workspace.
+// Honest by design: every dollar value and claim carries a verification
+// label; scores measure FIT and READINESS only, never a "win probability".
+// ============================================================
+
+// The master grant roster + funnel. Each grant Aubre pastes (from
+// GrantStation / GrantWatch / GrantPortal / SAM.gov / manual) lands here.
+model Grant {
+  id          String  @id @default(cuid())
+  name        String // grant / program name
+  funder      String // funding organization
+  funderType  String  @default("OTHER") // FEDERAL | STATE | FOUNDATION | LOCAL | CORPORATE | IN_KIND | OTHER
+  sourceFeed  String? // GrantStation | GrantWatch | GrantPortal | SAM.gov | Manual | Email
+  officialUrl String?
+
+  // Money — ALWAYS labeled. Never presented as fact unless verified.
+  amountMin   Int? // dollars
+  amountMax   Int? // dollars
+  amountLabel String @default("indicative") // indicative | verified | unknown
+
+  deadline     DateTime?
+  deadlineNote String? // e.g. "rolling LOIs", "cycle opens Q3"
+
+  // Funnel stage (Ophelia's master grant funnel).
+  status String @default("IDENTIFIED") // IDENTIFIED | QUALIFYING | PREPARING | AWAITING_APPROVAL | SUBMITTED | AWARDED | DECLINED | REPORTING | CLOSED
+
+  // Verification lifecycle (untrusted lead -> verified opportunity).
+  verificationStatus String @default("NEEDS_VERIFICATION") // LEAD | NEEDS_VERIFICATION | VERIFIED | CHANGED | CLOSED | DISQUALIFIED
+
+  // Hard eligibility gate result.
+  eligibility String @default("UNKNOWN") // PASS | CONDITIONAL | FAIL | UNKNOWN
+
+  // Scores — FIT and READINESS only. Not a forecast of winning.
+  fitScore       Int? // 0-100 alignment with AAC mission/priorities
+  readinessScore Int? // 0-100 percent of required elements ready
+  fitBreakdown   String? // optional component notes
+
+  tags            String[] @default([])
+  requirements    String? // extracted eligibility / priorities
+  pastWinnersNote String? // who won before + how funds were used (confidence-labeled)
+  aacRoute        String? // best AAC program route / how AAC can use it
+  opheliaNotes    String? // Ophelia's strategic analysis (draft, for human review)
+  nextAction      String?
+
+  isSample    Boolean  @default(false)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  approvals    GrantApproval[]
+  projectLinks ProjectGrantLink[]
+
+  @@index([status])
+  @@index([verificationStatus])
+  @@index([funderType])
+  @@index([deadline])
+}
+
+// The Approval Center. Nothing Ophelia drafts goes out until an authorized
+// human (Aubre' or an AAC reviewer) approves it here.
+model GrantApproval {
+  id          String  @id @default(cuid())
+  itemType    String  @default("OTHER") // OUTREACH | BUDGET | PROPOSAL | LOI | SOCIAL_POST | AGREEMENT | EVENT_PLAN | OTHER
+  title       String
+  description String? // the draft / what needs approval
+  grantId     String?
+  grant       Grant?  @relation(fields: [grantId], references: [id], onDelete: SetNull)
+
+  status     String    @default("PENDING") // PENDING | APPROVED | REJECTED | NEEDS_REVISION
+  feedback   String? // reviewer feedback
+  dueDate    DateTime?
+  proposedBy String    @default("Ophelia")
+
+  decidedById String?
+  decidedAt   DateTime?
+  isSample    Boolean   @default(false)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([status])
+  @@index([grantId])
+}
+
+// An Anna Arts Council project / initiative that needs funding.
+// Ophelia matches these to grants by tag overlap and funder alignment.
+model AacProject {
+  id          String   @id @default(cuid())
+  name        String
+  summary     String? // one-paragraph description
+  goals       String? // what success looks like
+  tags        String[] @default([]) // themes: youth, mural, festival, education, capital, etc.
+  fundingNeed Int? // dollars needed (indicative)
+  timeline    String? // e.g. "Spring 2026", "12 months"
+  leadName    String? // project lead
+  status      String   @default("PLANNING") // IDEA | PLANNING | SEEKING_FUNDING | FUNDED | ACTIVE | COMPLETE
+  notes       String?
+  isSample    Boolean  @default(false)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  grantLinks ProjectGrantLink[]
+
+  @@index([status])
+}
+
+// A grant a human chose to pursue (or park) for a specific project.
+// Matching itself is computed live; this table stores only human decisions.
+model ProjectGrantLink {
+  id          String     @id @default(cuid())
+  projectId   String
+  project     AacProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  grantId     String
+  grant       Grant      @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  decision    String     @default("PURSUING") // PURSUING | PARKED
+  note        String?
+  createdById String?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([projectId, grantId])
+  @@index([projectId])
+  @@index([grantId])
+}
+
+/// Admin moderation actions against a user account (warn / ban / unban).
+/// ADMIN-only. Provides an auditable history so warnings/bans are never silent.
+model ModerationAction {
+  id        String   @id @default(cuid())
+  targetId  String
+  target    User     @relation("ModerationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?    @relation("ModerationActor", fields: [actorId], references: [id])
+  action    String // warn | ban | unban
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([targetId])
+  @@index([createdAt])
+}
+
+// ===========================================================================
+// ANNA LIFE — Multi-tenant magazine operating system
+// (Build package: 10-phase. Phase 1 = tenant/RBAC foundation; Phase 2 =
+// publication/issue/frame production spine.) All additive; Anna is Tenant One
+// but nothing is hard-coded to Anna. Every tenant-owned row carries tenantId.
+// ===========================================================================
+
+enum TenantRole {
+  PLATFORM_ADMIN
+  TENANT_PUBLISHER
+  EDITOR
+  COPY_EDITOR
+  FACT_CHECKER
+  PREPRESS
+  FINANCE_ADMIN
+  SIERRA_OPERATOR
+  PRESS_PASS
+  PHOTOGRAPHER
+  ARTIST
+  BUSINESS_OWNER
+  NONPROFIT_ADMIN
+  CITY_ADMIN
+  CHAMBER_ADMIN
+  READER
+}
+
+model Tenant {
+  id          String  @id @default(cuid())
+  slug        String  @unique // "anna-tx"
+  legalName   String
+  displayName String
+  city        String
+  state       String
+  country     String  @default("US")
+  timezone    String  @default("America/Chicago")
+  status      String  @default("ACTIVE") // ACTIVE | ARCHIVED | TEST
+  isTest      Boolean @default(false) // non-production tenants (e.g. melissa-tx-test)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  domains                    TenantDomain[]
+  settings                   TenantSetting[]
+  memberships                TenantMembership[]
+  auditEvents                AuditEvent[]
+  publications               MagazinePublication[]
+  templates                  MagazineTemplate[]
+  prodIssues                 MagazineProductionIssue[]
+  prodPages                  MagazineProductionPage[]
+  prodFrames                 MagazineProductionFrame[]
+  assets                     MagazineAsset[]
+  sourceRecords              MagazineSourceRecord[]
+  agentFindings              MagazineAgentFinding[]
+  assignments                MagazineAssignment[]
+  adOrders                   MagazineAdOrder[]
+  contributorUnits           MagazineContributorUnit[]
+  contributorPools           MagazineContributorPool[]
+  stormRuns                  MagazineStormRun[]
+  stormTasks                 MagazineStormTask[]
+  releaseGates               MagazineReleaseGate[]
+  selectionRecords           MagazineSelectionRecord[]
+  audienceIntel              MagazineAudienceIntel[]
+  aiPressPersonas            AiPressPersona[]
+  aiPressStoryCycles         AiPressStoryCycle[]
+  agentSourceGrants          AgentSourceGrant[]
+  aiPressArticleRecords      AiPressArticleRecord[]
+  sierraEditorialThreads     SierraEditorialThread[]
+  sierraEditorialMessages    SierraEditorialMessage[]
+  editorialMediaMatches      EditorialMediaMatchCandidate[]
+  rightsPermissionInvites    RightsPermissionInvitation[]
+  personaFollows             PersonaFollow[]
+  personaEngagementRollups   PersonaEngagementRollup[]
+  personaRevenueAttributions PersonaRevenueAttribution[]
+  magazineInviteLinks        MagazineInviteLink[]
+  magazineAuthorApprovals    MagazineAuthorApproval[]
+
+  @@index([status])
+}
+
+model TenantDomain {
+  id                 String  @id @default(cuid())
+  tenantId           String
+  tenant             Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  hostname           String  @unique
+  environment        String  @default("production") // production | staging | development
+  verificationStatus String  @default("VERIFIED") // VERIFIED | PENDING | FAILED
+  isPrimary          Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model TenantSetting {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  key         String // e.g. "brand", "commerce", "modules"
+  valueJson   Json
+  version     Int      @default(1)
+  updatedById String?
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, key, version])
+  @@index([tenantId, key])
+}
+
+model TenantMembership {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  userId      String // -> User.id (loose ref, no cascade coupling)
+  status      String   @default("ACTIVE") // ACTIVE | INVITED | SUSPENDED
+  invitedById String?
+  joinedAt    DateTime @default(now())
+
+  roles MembershipRole[]
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+}
+
+model MembershipRole {
+  id           String           @id @default(cuid())
+  membershipId String
+  membership   TenantMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  role         TenantRole
+  grantedById  String?
+  grantedAt    DateTime         @default(now())
+
+  @@unique([membershipId, role])
+}
+
+// Append-only audit trail. Every consequential state change writes one row with
+// actor, tenant, object, prior/new state, reason and timestamp. Never updated.
+model AuditEvent {
+  id         String   @id @default(cuid())
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  actorId    String?
+  actorName  String?
+  actorRole  String?
+  objectType String // "tenant" | "membership" | "issue" | "frame" | "ad_order" | ...
+  objectId   String?
+  action     String
+  priorState String?
+  newState   String?
+  reason     String?
+  metaJson   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([objectType, objectId])
+}
+
+// ---- Production spine (Phase 2) --------------------------------------------
+
+model MagazinePublication {
+  id            String  @id @default(cuid())
+  tenantId      String
+  tenant        Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name          String // "ANNA LIFE"
+  slug          String // "anna-life"
+  tagline       String?
+  trimWidthIn   Float   @default(8.5)
+  trimHeightIn  Float   @default(11.0)
+  bleedIn       Float   @default(0.125)
+  physicalPages Int     @default(64)
+  brandJson     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  templates MagazineTemplate[]
+  issues    MagazineProductionIssue[]
+
+  @@unique([tenantId, slug])
+}
+
+// Imported frame manifest, stored immutably per version. Instantiating an issue
+// never mutates the template; a template change creates a new version.
+model MagazineTemplate {
+  id            String              @id @default(cuid())
+  tenantId      String
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  publicationId String
+  publication   MagazinePublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  key           String // "ISSUE-ZERO-64-PAGE-V2"
+  version       Int                 @default(1)
+  schemaVersion String?
+  manifestJson  Json // full canonical manifest (immutable for this version)
+
+  frameCount          Int @default(0)
+  editorialFrameCount Int @default(0)
+  adFrameCount        Int @default(0)
+  physicalPageCount   Int @default(64)
+
+  createdAt DateTime @default(now())
+
+  issues MagazineProductionIssue[]
+
+  @@unique([tenantId, key, version])
+}
+
+model MagazineProductionIssue {
+  id              String              @id @default(cuid())
+  tenantId        String
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  publicationId   String
+  publication     MagazinePublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  templateId      String
+  template        MagazineTemplate    @relation(fields: [templateId], references: [id])
+  templateVersion Int                 @default(1)
+
+  key               String // "ANNA-LIFE-ISSUE-ZERO"
+  title             String
+  status            String @default("DRAFT") // DRAFT|OPEN_FOR_SUBMISSIONS|IN_PRODUCTION|CLOSING|PREFLIGHT|PROOFING|READY_FOR_PRINT|PRINT_ORDERED|PUBLISHED|ARCHIVED
+  physicalPageCount Int    @default(64)
+
+  // V4 gated-newsroom lifecycle (additive, nullable). Opening claims, activating
+  // sales, recording print distribution and computing the digital embargo are
+  // each separate audited SUPER_ADMIN actions — never implied by import.
+  claimsOpenedAt     DateTime? // set when SUPER_ADMIN opens the claim board
+  claimsOpenedBy     String?
+  salesActivatedAt   DateTime? // set when SUPER_ADMIN activates sales (after price-book approval)
+  salesActivatedBy   String?
+  printDistributedAt DateTime? // publisher-recorded real distribution event
+  printDistributedBy String?
+  digitalReleaseAt   DateTime? // computed server-side = printDistributedAt + 7 calendar days
+  embargoOverride    Boolean   @default(false)
+  embargoOverrideReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pages       MagazineProductionPage[]
+  frames      MagazineProductionFrame[]
+  assignments MagazineAssignment[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId, status])
+}
+
+model MagazineProductionPage {
+  id           String                  @id @default(cuid())
+  tenantId     String
+  tenant       Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId      String
+  issue        MagazineProductionIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  physicalPage Int // 1..64 (reader order)
+  pageCode     String // C1, C2, P01..P60, C3, C4
+  printedPage  Int? // interior numbered page (1..60) or null for covers
+  sectionCode  String?
+  sectionLabel String?
+  pageTitle    String?
+  readerOrder  Int                     @default(0)
+
+  // V4 editable TOC: which approved source feeds this page and whether an
+  // open claimable Press Pass assignment has been generated from it.
+  sourceType              String? // KIND_DEEDS | STORIES_PAGE | PRESS_PASS | SIERRA_GRACE
+  assignmentOpportunityId String?
+  assignmentGeneratedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([issueId, physicalPage])
+  @@index([tenantId, issueId])
+}
+
+model MagazineProductionFrame {
+  id              String                  @id @default(cuid())
+  tenantId        String
+  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId         String
+  issue           MagazineProductionIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  frameKey        String // instantiated stable id (ISSUE prefix replaces ISSUE-TEMPLATE)
+  templateFrameId String // original manifest id (ISSUE-TEMPLATE-...)
+
+  physicalPage Int
+  pageCode     String
+  printedPage  Int?
+  sectionCode  String?
+  sectionLabel String?
+  pageTitle    String?
+
+  frameType String // TEXT|IMAGE|CAPTION|DATA|LOGO|QR|AD
+  label     String?
+  xIn       Float   @default(0)
+  yIn       Float   @default(0)
+  widthIn   Float   @default(0)
+  heightIn  Float   @default(0)
+
+  required        Boolean  @default(true)
+  status          String   @default("OPEN") // OPEN|AVAILABLE|HELD|POPULATED|IN_REVIEW|CHANGES_REQUESTED|APPROVED|EDITOR_LOCKED|PRINTED
+  acceptedSources String[]
+  assignmentId    String?
+  marketplace     String?
+  adminAction     String?
+
+  // Ad economics (integer cents; usd*100 from the manifest)
+  adSize       String?
+  adPriceCents Int?
+  adFpe        Float?
+
+  completionWeight       Float    @default(1.0)
+  minEffectiveDpi        Int?
+  allowedUploads         String[]
+  rightsReleaseRequired  Boolean  @default(false)
+  bylineApprovalRequired Boolean  @default(false)
+  approvalWorkflow       String[]
+
+  // Phase 11 provenance (additive; backfilled from V3 frame manifest)
+  sourceMode           String? // AUTO_POPULATED|SIERRA_WRITTEN|MANUAL_PRESS_PASS|ADMIN_MANUAL|PAID_UPLOAD
+  sourceConnectorKey   String? // e.g. magazine.press_pass_submissions
+  selectionMode        String? // EDITORIAL_SELECTION|VERIFIED_QUERY|*_RANDOMIZER|...
+  selectionRecordId    String? // -> MagazineSelectionRecord.id when a selection method chose this frame's subject
+  revenueShareEligible Boolean? // planned eligibility; actual award still gated by policy
+  contributionClass    String? // EDITORIAL_STORY_OR_PHOTO|COVER_STORY|COMMUNITY_PHOTO|ADVERTISING_NO_SHARE|...
+
+  lockVersion Int @default(0) // optimistic concurrency
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, frameKey])
+  @@index([tenantId, issueId, physicalPage])
+  @@index([issueId, status])
+  @@index([issueId, frameType])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE — Phase 3: Assets, Rights & Print Preflight (additive, tenant-scoped)
+// ---------------------------------------------------------------------------
+
+model MagazineAsset {
+  id          String @id @default(cuid())
+  tenantId    String
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  ownerUserId String
+
+  originalStorageKey String // cloud_storage_path — private original, never public
+  sha256             String
+  originalFilename   String
+  detectedMime       String
+  byteSize           Int
+
+  pixelWidth  Int?
+  pixelHeight Int?
+  colorSpace  String? // e.g. sRGB, CMYK, Gray
+  assetKind   String  @default("IMAGE") // IMAGE | DOCUMENT | DATA | VECTOR
+
+  creatorName            String?
+  copyrightOwner         String?
+  licenseCode            String? // e.g. ALL_RIGHTS_RESERVED, CC_BY, OWNED_BY_TENANT, LICENSED
+  caption                String?
+  creditLine             String?
+  aiGenerationDisclosure String?
+
+  rightsStatus String @default("UNVERIFIED") // UNVERIFIED | PENDING | CLEARED | REJECTED
+
+  archivedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  derivatives MagazineAssetDerivative[]
+  preflights  MagazineAssetPreflight[]
+  rights      MagazineRightsRecord[]
+
+  @@index([tenantId, sha256])
+  @@index([tenantId, ownerUserId])
+  @@index([tenantId, rightsStatus])
+}
+
+model MagazineAssetDerivative {
+  id                  String        @id @default(cuid())
+  tenantId            String
+  assetId             String
+  asset               MagazineAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  derivativeType      String // PREVIEW | THUMBNAIL | PUBLIC | PROOF
+  storageKey          String
+  width               Int?
+  height              Int?
+  publicAfterApproval Boolean       @default(false)
+  isPublic            Boolean       @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, assetId])
+}
+
+model MagazineAssetPreflight {
+  id       String        @id @default(cuid())
+  tenantId String
+  assetId  String
+  asset    MagazineAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  frameId  String? // MagazineProductionFrame.id (loose ref)
+
+  placedWidthIn   Float?
+  placedHeightIn  Float?
+  effectiveDpiX   Float?
+  effectiveDpiY   Float?
+  effectiveDpiMin Float?
+
+  status       String   @default("REVIEW") // PASS | WARN | FAIL | REVIEW
+  findingsJson Json
+  checkedAt    DateTime @default(now())
+
+  @@index([tenantId, assetId])
+  @@index([tenantId, frameId])
+}
+
+model MagazineRightsRecord {
+  id           String         @id @default(cuid())
+  tenantId     String
+  assetId      String?
+  asset        MagazineAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  submissionId String?
+
+  rightsType      String // COPYRIGHT | MODEL_RELEASE | PROPERTY_RELEASE | LICENSE | AI_DISCLOSURE
+  grantedBy       String // user id
+  scopeJson       Json
+  signedAt        DateTime?
+  expiresAt       DateTime?
+  documentAssetId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, assetId])
+}
+
+model MagazineSourceRecord {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  sourceType     String // INTERVIEW | DOCUMENT | URL | DATASET | PRESS_RELEASE
+  title          String?
+  url            String?
+  publisher      String?
+  capturedText   String?
+  capturedAt     DateTime  @default(now())
+  permissionCode String?
+  refreshAfter   DateTime?
+  verifiedBy     String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, sourceType])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE — Phase 5: Sierra Grace runtime agents (proposal-only, human-gated)
+// Every AI output is a stored finding/suggestion that a named human must
+// resolve. Suggestions never auto-apply; originals are never overwritten.
+// ---------------------------------------------------------------------------
+
+model MagazineAgentFinding {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  runId     String // groups findings from one orchestrator run
+  agentKey  String // SIERRA_ORCHESTRATOR | INTAKE_CONCIERGE | WRITING_SCRUB | FACT_SOURCE_SENTINEL | RIGHTS_PRIVACY_GUARDIAN | PHOTO_PREPRESS | TENANT_BOUNDARY | ...
+  agentName String
+
+  objectType String // Submission | Asset | Frame | Issue | Text
+  objectId   String?
+
+  status   String // PASS | ADVISORY | NEEDS_HUMAN | BLOCKED | ERROR
+  severity String @default("LOW") // LOW | MEDIUM | HIGH | CRITICAL
+
+  summary           String // gracious user-facing line
+  explanation       String? // why it matters (no chain-of-thought)
+  evidenceJson      Json? // affected fields / excerpts / metrics
+  sourcesJson       Json? // source candidates (never invented)
+  confidence        Float? // 0..1
+  recommendedAction String?
+
+  // Voice-preserving writing suggestions (proposal only)
+  originalExcerpt String?
+  proposedExcerpt String?
+  rationale       String?
+
+  // Human gate (Apply / Compare / Dismiss / Ask why -> resolution)
+  resolution       String    @default("OPEN") // OPEN | APPLIED | DISMISSED | ESCALATED | VERIFIED
+  resolvedByUserId String?
+  resolvedAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, runId])
+  @@index([tenantId, objectType, objectId])
+  @@index([tenantId, status])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE — Phase 4: Assignments, Submissions, Authorship & Approvals
+// Additive & tenant-scoped. Built on the Phase 2 production spine.
+// Distinct names avoid collision with the legacy single-tenant covenant models
+// (MagazineSubmissionVersion / MagazineCredit) which remain untouched.
+// ---------------------------------------------------------------------------
+
+enum MagazineAssignmentStatus {
+  DRAFT
+  OPEN
+  HELD
+  SUBMITTED
+  IN_REVIEW
+  REVISION_REQUESTED
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+  EXPIRED
+  CLOSED
+}
+
+enum MagazineApprovalType {
+  FACTS
+  EDITORIAL
+  RIGHTS
+  CREDIT_BYLINE
+  SUBJECT_PROOF
+  ADVERTISER_PROOF
+  PREPRESS
+  FINANCE
+  PHYSICAL_PROOF
+  FINAL_RELEASE
+}
+
+enum MagazineApprovalStatus {
+  PENDING
+  APPROVED
+  CHANGES_REQUESTED
+  REVOKED
+  SUPERSEDED
+}
+
+// Typed credits. Editing (EDITED_BY) is never authorship (WRITTEN_BY).
+enum MagazineCreditType {
+  WRITTEN_BY
+  EDITED_BY
+  ADDITIONAL_REPORTING_BY
+  PHOTOGRAPHY_BY
+  ILLUSTRATION_BY
+  AI_ASSISTANCE_DISCLOSED
+}
+
+model MagazineAssignment {
+  id       String                  @id @default(cuid())
+  tenantId String
+  tenant   Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+  issue    MagazineProductionIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  assignmentType   String // MAGAZINE_STORY | PHOTOGRAPHY | ILLUSTRATION | REQUEST_FOR_SUBMISSION | INTERVIEW
+  title            String
+  department       String? // section label
+  brief            String // rich text brief
+  requirementsJson Json // { wordTarget, shotTarget, pages, frameIds, rightsTerms, compensationUnitEligible }
+  status           MagazineAssignmentStatus @default(DRAFT)
+  deadline         DateTime?
+
+  editorUserId String
+  editorName   String?
+
+  contributorUnitEligible Boolean @default(true)
+  holdMinutes             Int     @default(4320) // configurable claim hold (default 72h)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  frameLinks  MagazineAssignmentFrame[]
+  claims      MagazineAssignmentClaim[]
+  submissions MagazineProdSubmission[]
+
+  @@index([tenantId, issueId, status])
+  @@index([tenantId, status])
+}
+
+model MagazineAssignmentFrame {
+  id           String             @id @default(cuid())
+  tenantId     String
+  assignmentId String
+  assignment   MagazineAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  frameId      String // -> MagazineProductionFrame.id (loose ref)
+
+  createdAt DateTime @default(now())
+
+  @@unique([assignmentId, frameId])
+  @@index([tenantId, frameId])
+}
+
+model MagazineAssignmentClaim {
+  id             String             @id @default(cuid())
+  tenantId       String
+  assignmentId   String
+  assignment     MagazineAssignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
+  claimantUserId String
+  claimantName   String?
+
+  heldUntil  DateTime
+  releasedAt DateTime? // set when released/expired/submitted; only one row with releasedAt=null is active
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, assignmentId, releasedAt])
+  @@index([claimantUserId, releasedAt])
+}
+
+model MagazineProdSubmission {
+  id           String              @id @default(cuid())
+  tenantId     String
+  assignmentId String?
+  assignment   MagazineAssignment? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+
+  submitterUserId String
+  submitterName   String?
+  status          MagazineAssignmentStatus @default(SUBMITTED)
+
+  submittedAt DateTime  @default(now())
+  acceptedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  original  MagazineSubmissionOriginal?
+  revisions MagazineSubmissionRevision[]
+  credits   MagazineProdCredit[]
+  decisions MagazineEditorialDecision[]
+
+  @@index([tenantId, assignmentId])
+  @@index([tenantId, status])
+}
+
+// Immutable original — written exactly once, never updated or deleted.
+model MagazineSubmissionOriginal {
+  id           String                 @id @default(cuid())
+  tenantId     String
+  submissionId String                 @unique
+  submission   MagazineProdSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  contentJson  Json
+  sha256       String
+  wordCount    Int     @default(0)
+  authorUserId String?
+  authorName   String
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+// Append-only revisions. Original authorship is carried on the submission, never
+// reassigned by a revision (editing never becomes authorship).
+model MagazineSubmissionRevision {
+  id               String                 @id @default(cuid())
+  tenantId         String
+  submissionId     String
+  submission       MagazineProdSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  revisionNumber   Int
+  parentRevisionId String?
+
+  contentJson   Json
+  diffJson      Json
+  sha256        String
+  createdById   String
+  createdByName String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([submissionId, revisionNumber])
+  @@index([tenantId, submissionId])
+}
+
+model MagazineProdCredit {
+  id           String                  @id @default(cuid())
+  tenantId     String
+  issueId      String
+  submissionId String?
+  submission   MagazineProdSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  frameId      String?
+
+  creditType     MagazineCreditType
+  creditedUserId String?
+  displayName    String
+  detail         String?
+  order          Int                @default(0)
+
+  status                 MagazineApprovalStatus @default(APPROVED)
+  requiresAuthorApproval Boolean                @default(false)
+  approvedAt             DateTime?
+  approvalVersion        Int                    @default(1)
+
+  proposedById   String?
+  proposedByName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, issueId])
+  @@index([tenantId, creditedUserId])
+}
+
+// Append-only approvals ledger. A change after proof reopens only the affected
+// approval type (a new PENDING row with a bumped object_version).
+model MagazineProdApproval {
+  id       String @id @default(cuid())
+  tenantId String
+
+  objectType String // "submission" | "credit" | "frame" | "ad_order" | "issue"
+  objectId   String
+
+  approvalType        MagazineApprovalType
+  status              MagazineApprovalStatus @default(PENDING)
+  requestedFromUserId String
+  requestedFromName   String?
+  decidedByUserId     String?
+  decidedByName       String?
+  objectVersion       Int                    @default(1)
+  reason              String?
+  decidedAt           DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, objectType, objectId])
+  @@index([tenantId, status])
+}
+
+// Sensitive accept/reject/decline outcomes — always a human decision.
+model MagazineEditorialDecision {
+  id           String                 @id @default(cuid())
+  tenantId     String
+  submissionId String
+  submission   MagazineProdSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  decision        String // ACCEPT | REJECT | REVISION_REQUEST | FUTURE_ISSUE | ALTERNATE_DEPARTMENT | SHORTER_FORMAT | INTERVIEW_ASSIST | DECLINE
+  reasonCode      String
+  explanation     String
+  decidedByUserId String
+  decidedByName   String?
+
+  decidedAt DateTime @default(now())
+
+  @@index([tenantId, submissionId])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE — Phase 6: ANNA LIFE ADS — inventory, checkout & sponsors.
+// Additive & tenant-scoped. Prices are server-owned (snapshotted from the
+// production frame). Advertising confers NO editorial benefit.
+// ---------------------------------------------------------------------------
+
+enum MagazineAdOrderStatus {
+  DRAFT // creative staged, not paid
+  HELD // checkout hold placed, slot reserved, awaiting payment
+  AWAITING_PAYMENT // checkout session opened
+  PAID // payment verified server-side; slot leaves public inventory
+  CREATIVE_REVIEW // paid; creative in preflight/proof review
+  CHANGES_REQUESTED // paid but creative failed; replacement requested (stays reserved)
+  APPROVED // advertiser proof approved
+  PLACED // creative saved into the issue
+  REFUND_REQUESTED
+  REFUNDED
+  EXPIRED // hold lapsed before payment
+  CANCELLED
+}
+
+model MagazineAdOrder {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+  frameId  String // -> MagazineProductionFrame.id (the ad slot)
+
+  buyerUserId  String
+  buyerName    String?
+  businessName String
+  contactEmail String?
+
+  // Server-owned price snapshot (never trusted from the browser).
+  adSize             String
+  priceCentsSnapshot Int
+  fpeSnapshot        Float  @default(0)
+
+  status    MagazineAdOrderStatus @default(DRAFT)
+  labelKind String                @default("ADVERTISEMENT") // ADVERTISEMENT | PAID_PARTNER | SPONSORED
+
+  // Checkout hold + payment
+  holdUntil         DateTime?
+  idempotencyKey    String    @unique
+  checkoutSessionId String?
+  paymentIntentId   String?
+  paidAt            DateTime?
+  amountPaidCents   Int?
+
+  // One ACTIVE order per (issue, slot): set while reserved, nulled when terminal.
+  slotLockKey String? @unique
+
+  // Refund (authorized human approval only)
+  refundRequestedAt DateTime?
+  refundApprovedBy  String?
+  refundedAt        DateTime?
+  refundReason      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creatives MagazineAdCreative[]
+
+  @@index([tenantId, issueId, status])
+  @@index([tenantId, frameId])
+}
+
+model MagazineAdCreative {
+  id       String          @id @default(cuid())
+  tenantId String
+  orderId  String
+  order    MagazineAdOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  assetId          String? // -> MagazineAsset.id (private original)
+  storageKey       String?
+  originalFilename String?
+  detectedMime     String?
+
+  // Preflight / proof outcome (paid creative must pass all gates).
+  fileSafetyOk    Boolean   @default(false)
+  dimensionsOk    Boolean   @default(false)
+  effectiveDpi    Int?
+  dpiOk           Boolean   @default(false)
+  qrLinkOk        Boolean   @default(false)
+  proofApproved   Boolean   @default(false)
+  proofApprovedBy String?
+  proofApprovedAt DateTime?
+  reviewNote      String?
+
+  version   Int     @default(1)
+  isCurrent Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, orderId])
+}
+
+// Append-only webhook ledger for idempotency (replayed events are ignored).
+model MagazineAdWebhookEvent {
+  id              String   @id @default(cuid())
+  tenantId        String?
+  providerEventId String   @unique
+  eventType       String
+  orderId         String?
+  payloadJson     Json?
+  processedAt     DateTime @default(now())
+
+  @@index([orderId])
+}
+
+// ============================================================================
+// ANNA LIFE — Phase 7: Contributor pool & payout journey (additive).
+// One accepted assignment = one contributor unit; co-owners split a unit by
+// approved basis points summing to 10000. Only settled advertiser funds enter
+// the pool; refunds and counsel-approved direct costs are explicit. Statements
+// are append-only and immutable once finalized — corrections use reversing +
+// replacement entries. Only FINANCE_ADMIN may finalize or release.
+// ============================================================================
+
+enum MagazineProdPayoutStatus {
+  ESTIMATED
+  CALCULATED
+  FINANCE_REVIEW
+  FINALIZED
+  PAYABLE_PENDING
+  RELEASED
+  PAID
+  FAILED
+  REVERSED
+}
+
+model MagazineContributorUnit {
+  id           String @id @default(cuid())
+  tenantId     String
+  tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId      String
+  assignmentId String @unique // one accepted assignment == one unit (immutable)
+  units        Float  @default(1)
+
+  // Phase 11 contribution points (additive; equal-unit `units` preserved for finalized history)
+  contributionClass   String?
+  pointsPolicyVersion String?
+  pointsAwarded       Float? // immutable points award; null => legacy equal-unit record
+  plannedPointsMin    Float?
+  plannedPointsMax    Float?
+
+  createdAt DateTime @default(now())
+
+  owners MagazineContributorUnitOwner[]
+
+  @@index([tenantId, issueId])
+}
+
+model MagazineContributorUnitOwner {
+  id           String                  @id @default(cuid())
+  tenantId     String
+  unitId       String
+  unit         MagazineContributorUnit @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  userId       String
+  ownerName    String?
+  ownershipBps Int // basis points; owners of a unit sum to 10000
+
+  createdAt DateTime @default(now())
+
+  @@unique([unitId, userId])
+  @@index([tenantId, unitId])
+}
+
+model MagazineContributorPool {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String @unique
+
+  settledAdRevenueCents        Int
+  refundsCents                 Int   @default(0)
+  allowedDirectCostsCents      Int   @default(0)
+  reserveBps                   Int   @default(500) // 5% direct ad/payment reserve
+  reserveCents                 Int   @default(0)
+  netAdProfitCents             Int
+  poolBasisPoints              Int   @default(5000) // 50% of net ad profit
+  contributorPoolCents         Int
+  publisherRetainedCents       Int
+  publisherRetainedTargetCents Int   @default(1000000) // $10,000 floor
+  totalUnits                   Float
+
+  status      MagazineProdPayoutStatus @default(ESTIMATED)
+  finalizedBy String?
+  finalizedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  statements MagazinePayoutStatement[]
+
+  @@index([tenantId, issueId])
+}
+
+model MagazinePayoutStatement {
+  id       String                  @id @default(cuid())
+  tenantId String
+  poolId   String
+  pool     MagazineContributorPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  userId   String
+  userName String?
+
+  ownedUnits        Float
+  grossPayableCents Int
+  adjustmentsCents  Int                      @default(0)
+  finalPayableCents Int
+  status            MagazineProdPayoutStatus @default(FINALIZED)
+  paymentReference  String?
+
+  // Append-only correction chain: a reversal/replacement points back to prior.
+  supersedesId String?
+  isReversal   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, poolId])
+  @@index([poolId, userId])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE - Phase 8: Production dashboard, controlled storms & release gate.
+// Storms IDENTIFY, ROUTE, REMIND, DRAFT and ESCALATE only. They never publish,
+// send external outreach, change editorial decisions, move money or release
+// payouts. All consequential actions stay with named humans. Jobs are
+// idempotent (dedupeKey), resumable, observable and tenant-scoped.
+// ---------------------------------------------------------------------------
+
+model MagazineStormRun {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+
+  stormKey String // ISSUE_CLOSING_STORM | STORY_GAP_STORM | REVENUE_STORM | DISTRIBUTION_STORM
+  trigger  String @default("MANUAL") // MANUAL | SCHEDULED
+  status   String @default("RUNNING") // RUNNING | COMPLETED | FAILED
+
+  // Idempotency: one live run per (tenant, issue, storm, runKey). runKey is a
+  // caller-supplied bucket (e.g. a date) so a retry re-uses the same run.
+  runKey          String
+  startedByUserId String?
+  startedByName   String?
+
+  findingsJson Json? // inputs + checks + findings snapshot (observable)
+  summary      String?
+  tasksCreated Int     @default(0)
+  tasksSkipped Int     @default(0)
+  errorText    String?
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  tasks MagazineStormTask[]
+
+  @@unique([tenantId, issueId, stormKey, runKey])
+  @@index([tenantId, issueId, stormKey])
+}
+
+model MagazineStormTask {
+  id       String           @id @default(cuid())
+  tenantId String
+  tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+  runId    String
+  run      MagazineStormRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  stormKey  String
+  taskType  String // MISSING_FRAME | UNRESOLVED_FINDING | RIGHTS_GAP | SOURCE_GAP | BYLINE_GAP | DPI_GAP | OVERSET | AD_UNRESOLVED | REVENUE_SHORTFALL | POOL_UNCALCULATED | PRESALE_SHORTFALL | PROOF_PENDING | STORY_GAP | SIERRA_DRAFT | CONTRIBUTOR_REC | SALES_DRAFT | BUNDLE_REC | OUTREACH_QUEUE | DISTRIBUTION | PICKUP_MAP | PUBLIC_POST_DRAFT | ESCALATION
+  // Stable dedupe key => the same finding never spawns duplicate tasks on retry.
+  dedupeKey String
+
+  severity        String  @default("MEDIUM") // LOW | MEDIUM | HIGH | CRITICAL
+  title           String
+  detail          String?
+  pageCode        String?
+  frameKey        String?
+  department      String?
+  responsibleRole String? // owner who must act
+  nextAction      String?
+
+  // Draft-only payloads (sales copy, sierra outline, posts) — never auto-sent.
+  draftJson             Json?
+  requiresHumanApproval Boolean @default(false)
+
+  status           String    @default("OPEN") // OPEN | ACKNOWLEDGED | RESOLVED | DISMISSED
+  resolvedByUserId String?
+  resolvedByName   String?
+  resolutionNote   String?
+  resolvedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, issueId, dedupeKey])
+  @@index([tenantId, issueId, status])
+  @@index([runId])
+}
+
+model MagazineReleaseGate {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String @unique
+
+  status     String  @default("BLOCKED") // BLOCKED | READY | RELEASED
+  checksJson Json // each required check + pass/fail + numerator/denominator
+  allPass    Boolean @default(false)
+
+  // Publisher-entered facts that no automated signal can supply. Storms remind
+  // but never set these; only a named human records them.
+  physicalProofStatus     String @default("PENDING") // PENDING | IN_REVIEW | APPROVED | REJECTED
+  bulkPresaleRevenueCents Int    @default(0)
+  landedPrintCostCents    Int    @default(0)
+  allowedDirectCostsCents Int    @default(0)
+
+  releasedByUserId String?
+  releasedByName   String?
+  releasedAt       DateTime?
+
+  // Emergency override (two-person; never overrides authorship or payment).
+  overrideUsed          Boolean @default(false)
+  overrideReason        String?
+  overrideByUserId      String?
+  overrideConfirmUserId String?
+
+  lastComputedAt DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([tenantId, issueId])
+}
+
+// Phase 11: Randomizer / selection audit. Selection is a METHOD, not authorship.
+// Records the eligible pool, exclusions, method, seed/hash, timestamp and human
+// approval whenever a randomizer / ranking / rotation chooses a frame's subject.
+// A selection record NEVER by itself creates contributor points or authorship.
+model MagazineSelectionRecord {
+  id       String  @id @default(cuid())
+  tenantId String
+  tenant   Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+  frameKey String? // instantiated frame this selection fills (nullable for pre-frame draws)
+
+  selectionMode    String // INVITATION_ONLY_RANDOMIZER|ELIGIBLE_CITY_LEADER_RANDOMIZER|OPT_IN_RANDOMIZER|SURVEY_NUMBER_ONE_SELECTION|EDITORIAL_ROTATION|CONTEST_OR_EDITORIAL_SELECTION|...
+  method           String // human-readable method description
+  eligiblePool     Json // array of candidate record ids/labels considered
+  exclusions       Json // array of excluded ids + reason
+  seed             String? // randomness seed when applicable
+  hash             String? // verification hash of (seed + pool) when applicable
+  selectedRecordId String? // the chosen candidate id/label
+
+  approvedByUserId String? // human approval is REQUIRED before the selection is used
+  approvedByName   String?
+  approvedAt       DateTime?
+
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, issueId])
+  @@index([issueId, frameKey])
+}
+
+// ============================================================================
+// GENERATIONAL NEWSROOM (Phase 1) — six disclosed AI correspondents + the
+// versioned audience-intelligence import. Built INACTIVE / sandbox only.
+// Managed by Sierra Grace; personas are SYSTEM_AGENT_PROFILEs, never human
+// Press Pass users, earn zero contributor points and never receive payouts.
+// ============================================================================
+
+// One versioned snapshot of the canonical generational audience-intelligence
+// workbook. Superseding creates a NEW row; history is never overwritten.
+model MagazineAudienceIntel {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  versionLabel  String // e.g. "2026.1"
+  workbookTitle String
+  sha256        String // verified content hash of the source workbook
+  researchDate  String // ISO date the workbook was researched/compiled
+
+  matrixRowCount      Int @default(0)
+  sourceCount         Int @default(0)
+  prototypeFieldCount Int @default(0)
+  maxRowsPerBrief     Int @default(12)
+
+  dataPath     String // project-relative path to the extracted JSON (public/data/...)
+  status       String  @default("DRAFT") // DRAFT | ACTIVE | SUPERSEDED
+  notesJson    Json?
+  importedById String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, versionLabel])
+  @@index([tenantId, status])
+}
+
+// A disclosed, fictional AI correspondent looking at Anna through one
+// generational lens. Never a human; every public surface shows an
+// "AI CORRESPONDENT" badge and the disclosure notice.
+model AiPressPersona {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personaKey        String // BABY_B | XEN_LR | JEN_X | MILLY_N | GENE_Z | ALLIE_AF
+  publicProfileSlug String // baby-b | zen-lr | jen-x | milly-n | gene-z | allie-f
+  displayName       String // "Baby B.", "Jen X.", ...
+  generationLens    String // BABY_BOOMER | GEN_X | XENNIAL | MILLENNIAL | GEN_Z | GEN_ALPHA
+  deskTitle         String
+  tagline           String
+  archetypeTitle    String? // "The Legacy Keeper"
+  oneLineEssence    String?
+
+  publicBio      String @db.Text
+  disclosureText String @db.Text
+
+  avatarAssetId     String?
+  personaConfigJson Json // full enriched persona config (beats, voice, red flags, etc.)
+  personaVersion    String // e.g. "2.0.0"
+
+  managedByAgentKey String    @default("SIERRA_GRACE")
+  status            String    @default("INACTIVE") // INACTIVE | ACTIVE | ARCHIVED
+  activatedById     String?
+  activatedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  storyCycles         AiPressStoryCycle[]
+  sourceGrants        AgentSourceGrant[]
+  articles            AiPressArticleRecord[]
+  editorialThreads    SierraEditorialThread[]
+  follows             PersonaFollow[]
+  engagementRollups   PersonaEngagementRollup[]
+  revenueAttributions PersonaRevenueAttribution[]
+
+  @@unique([tenantId, personaKey, personaVersion])
+  @@unique([tenantId, publicProfileSlug])
+  @@index([tenantId, status])
+}
+
+// ============================================================================
+// GENERATIONAL NEWSROOM — Phases 2-6 (all INACTIVE / sandbox by default)
+// Additive models. AI personas never earn points or receive payout; those
+// belong to the human Contributor House (MagazineContributorUnit/Pool/etc).
+// Cross-references to existing entities (issue, user, assignment, asset,
+// ledger, submission, revision, rights record) are stored as indexed String
+// ids to keep this migration self-contained and additive.
+// ============================================================================
+
+// PHASE 3 — One story cycle per persona per issue (3 candidates each => 18).
+model AiPressStoryCycle {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId   String
+  personaId String
+  persona   AiPressPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  candidateArticleCount    Int @default(3)
+  maxSelectedPrintArticles Int @default(1)
+  wordMin                  Int @default(500)
+  wordMax                  Int @default(800)
+
+  status             String    @default("WAITING_FOR_APPROVED_SOURCE_PACK") // WAITING_FOR_HUMAN_FIRST_WINDOW | WAITING_FOR_APPROVED_SOURCE_PACK | DRAFTING | IN_SIERRA_REVIEW | RECOMMENDED | EDITOR_DECISION | CLOSED
+  sourcePackDeadline DateTime?
+  draftDeadline      DateTime?
+  humanEditorId      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  articles AiPressArticleRecord[]
+
+  @@unique([issueId, personaId])
+  @@index([tenantId, issueId])
+  @@index([tenantId, status])
+}
+
+// PHASE 2 — Evidence Broker: deny-by-default, read-only, expiring source grant.
+model AgentSourceGrant {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personaId String
+  persona   AiPressPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  connectorKey String // which connector/dataset (e.g. PUBLIC_CITY_AGENDA, AUDIENCE_INTEL_2026)
+
+  storyPurpose        String? @db.Text
+  materialQuestions   String? @db.Text
+  sourceOwnerApprover String?
+  classification      String  @default("PUBLIC") // PUBLIC | APPROVED_INTERNAL_AGGREGATED
+  citationLabel       String?
+  publicUrlExists     Boolean @default(false)
+
+  allowedSourceClassesJson Json
+  fieldAllowlistJson       Json
+  rowFilterJson            Json
+
+  publicationPermissionRequired Boolean @default(true)
+  readOnly                      Boolean @default(true)
+
+  status      String    @default("REQUESTED") // REQUESTED | OWNER_REVIEW | APPROVED | NARROWED | DENIED | EXPIRED | REVOKED
+  grantedById String
+  grantedAt   DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, personaId, connectorKey, grantedAt])
+  @@index([tenantId, personaId])
+  @@index([tenantId, status])
+}
+
+// PHASE 3 — One candidate article draft (3 per cycle). Sandbox/preview copy only.
+model AiPressArticleRecord {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId      String
+  storyCycleId String
+  storyCycle   AiPressStoryCycle @relation(fields: [storyCycleId], references: [id], onDelete: Cascade)
+  personaId    String
+  persona      AiPressPersona    @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  assignmentId String?
+
+  articleNumber Int // 1..3 within the cycle
+  sourceMode    String @default("AI_PRESS_CORRESPONDENT")
+
+  headline    String?
+  standfirst  String? @db.Text
+  bodyPreview String? @db.Text // sandbox stub — NOT publishable copy
+
+  currentRevisionId String?
+  sourcePackHash    String  @default("")
+  citationCount     Int     @default(0)
+  bodyWordCount     Int     @default(0)
+  disclosurePresent Boolean @default(false)
+
+  humanEditorId         String
+  sierraEditorialStatus String @default("NOT_REVIEWED") // NOT_REVIEWED | IN_REVIEW | SIERRA_SATISFIED | CHANGES_REQUESTED
+
+  candidateRank           Int?
+  selectionScoreJson      Json? // {coverageGapValue, evidenceStrength, annaRelevance, readerUsefulness, originality, visualPotential, issueBalance, total}
+  printSelectionStatus    String  @default("NOT_SELECTED") // NOT_SELECTED | RECOMMENDED | ACCEPTED | REJECTED | BANKED | DIGITAL_ONLY
+  printSelectionReason    String? @db.Text
+  selectedByHumanEditorId String?
+
+  status      String    @default("SANDBOX") // SANDBOX | DRAFT | SUBMITTED | CLOSED
+  publishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, personaId, articleNumber])
+  @@index([tenantId, issueId])
+  @@index([tenantId, storyCycleId])
+}
+
+// PHASE 4 — Sierra's warm coaching thread (human contributor OR AI correspondent).
+model SierraEditorialThread {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId          String
+  submissionId     String? // set for human contributors
+  aiPressArticleId String? // set for AI correspondents
+  authorUserId     String?
+  personaId        String?
+  persona          AiPressPersona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
+
+  currentRevisionId String
+  status            String    @default("OPEN") // OPEN | SIERRA_SATISFIED | EDITOR_ACCEPTED | CLOSED
+  humanEditorId     String
+  openedAt          DateTime  @default(now())
+  closedAt          DateTime?
+
+  messages SierraEditorialMessage[]
+
+  @@index([tenantId, issueId])
+  @@index([tenantId, status])
+}
+
+// PHASE 4 — Append-only coaching messages tied to an exact revision.
+model SierraEditorialMessage {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  threadId   String
+  thread     SierraEditorialThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  revisionId String
+
+  senderType  String // SIERRA | HUMAN_EDITOR | CONTRIBUTOR | AI_CORRESPONDENT
+  messageType String // CELEBRATION | MUST_FIX | CRAFT_OPTION | SOURCE_REQUEST | RIGHTS_QUESTION | NEXT_STEP
+
+  encouragementJson   Json?
+  mustFixJson         Json?
+  optionalCraftJson   Json?
+  sourceRequestsJson  Json?
+  lineSuggestionsJson Json?
+  nextStep            String @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, threadId])
+}
+
+// PHASE 5 — Ranked art/photo candidates for an approved story (ask-first).
+model EditorialMediaMatchCandidate {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId          String
+  storyObjectType  String // AI_PRESS_ARTICLE | SUBMISSION
+  storyObjectId    String
+  assetId          String
+  ownerUserId      String
+  sourceCollection String // ARTIST_PORTAL | COMMUNITY_GALLERY | LICENSED_LIBRARY
+
+  relevanceScore          Float  @default(0)
+  visualQualityScore      Float  @default(0)
+  effectiveDpiStatus      String @default("UNKNOWN") // OK | LOW | UNKNOWN
+  rightsStatus            String @default("NEEDS_PERMISSION") // NEEDS_PERMISSION | LICENSED | OWNER_APPROVED
+  representationNotesJson Json?
+
+  status       String  @default("PROPOSED") // PROPOSED | SHORTLISTED | SELECTED | DISMISSED
+  selectedById String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([issueId, storyObjectType, storyObjectId, assetId])
+  @@index([tenantId, issueId])
+}
+
+// PHASE 5 — Permission invitation (created, NOT auto-sent). Single-use token;
+// never reveals earnings or tax data; YES never bypasses editorial/prepress gates.
+model RightsPermissionInvitation {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId               String
+  mediaMatchCandidateId String
+  recipientUserId       String
+
+  proposedScopeJson         Json
+  proposedCreditLine        String
+  compensationPolicyVersion String
+  plannedPointsMin          Float  @default(0)
+  plannedPointsMax          Float  @default(0)
+
+  signedTokenHash         String
+  expiresAt               DateTime
+  status                  String    @default("DRAFT") // DRAFT | SENT | YES | QUESTION | COUNTER | DECLINED | EXPIRED
+  respondedAt             DateTime?
+  resultingRightsRecordId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, issueId])
+  @@index([tenantId, status])
+}
+
+// Reader relationship with a persona (consent-first; no age inference).
+model PersonaFollow {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  personaId      String
+  persona        AiPressPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  followerUserId String
+  followedAt     DateTime       @default(now())
+  unfollowedAt   DateTime?
+
+  @@unique([tenantId, personaId, followerUserId])
+  @@index([tenantId, personaId])
+}
+
+// Per-issue engagement rollup for a persona (quality-weighted, integrity-penalized).
+model PersonaEngagementRollup {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId   String
+  personaId String
+  persona   AiPressPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  metricWindow String // ISSUE | ROLLING_30D
+
+  qualifiedUniqueFollows Int @default(0)
+  qualifiedReads         Int @default(0)
+  completedReads         Int @default(0)
+  returnReaders          Int @default(0)
+  saves                  Int @default(0)
+  shares                 Int @default(0)
+  meaningfulReplies      Int @default(0)
+  crossPersonaFollows    Int @default(0)
+
+  integrityPenaltyPoints  Float @default(0)
+  audienceConnectionScore Float @default(0)
+
+  calculatedAt DateTime @default(now())
+
+  @@unique([issueId, personaId, metricWindow])
+  @@index([tenantId, personaId])
+}
+
+// Immutable settled-revenue attribution (never estimates; personas earn no payout).
+model PersonaRevenueAttribution {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  issueId   String
+  personaId String
+  persona   AiPressPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  articleId String?
+
+  ledgerEntryId          String
+  attributionType        String // SPONSOR_OF_DESK | AD_ADJACENCY | REGIONAL_SYNDICATION
+  settledRevenueCents    Int
+  attributionRuleVersion String
+
+  attributedAt DateTime @default(now())
+
+  @@index([tenantId, issueId])
+  @@index([tenantId, personaId])
+}
+
+// ── Contributor tax (W-9) + payout setup ──────────────────────────────────
+// DRAFT / SANDBOX per ANNA_LIFE_CONTRIBUTOR_HOUSE_AND_PAYOUT_PREFLIGHT.
+// SECURITY: Abacus stores ONLY non-sensitive fields + last-4 digits + status.
+// Full SSN/EIN and full bank account numbers are NEVER persisted here — at
+// go-live they are handed directly to a PCI/identity-capable payout provider.
+// Human contributors only; AI personas can never own one of these rows.
+model ContributorPayoutProfile {
+  id       String  @id @default(cuid())
+  userId   String  @unique
+  tenantId String?
+
+  // W-9 tax profile (non-sensitive parts only)
+  legalName              String?
+  businessName           String?
+  taxClassification      String? // individual_sole_prop | c_corp | s_corp | partnership | trust_estate | llc | other
+  taxClassificationOther String?
+  addressLine1           String?
+  addressLine2           String?
+  city                   String?
+  state                  String?
+  zip                    String?
+  country                String    @default("US")
+  tinType                String? // SSN | EIN
+  tinLast4               String? // ONLY the last 4 digits are ever stored
+  w9Certified            Boolean   @default(false)
+  w9SignatureName        String?
+  w9CertifiedAt          DateTime?
+  taxProfileStatus       String    @default("NOT_STARTED") // NOT_STARTED | SUBMITTED | VERIFIED
+
+  // Payout method preference
+  payoutMethod        String? // DIRECT_DEPOSIT | PAPER_CHECK
+  bankName            String?
+  accountType         String? // checking | savings
+  routingLast4        String? // last 4 only
+  accountLast4        String? // last 4 only
+  checkPayeeName      String?
+  checkAddressLine1   String?
+  checkAddressLine2   String?
+  checkCity           String?
+  checkState          String?
+  checkZip            String?
+  payoutProfileStatus String  @default("NOT_STARTED") // NOT_STARTED | SUBMITTED | VERIFIED
+
+  // Lifecycle — stays DRAFT until Publisher + Finance + CPA sign off (go-live).
+  onboardingStatus String    @default("DRAFT")
+  consentAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation("UserPayoutProfile", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TOWN DOORS — white-label control room ("Bring it to your town").
+// Each row is one town/city "door". Anna is the MASTER: shared platform value
+// props live on Anna and propagate to every child town that inherits them, so
+// "a change made in Anna is made for all cities." Civic + branding fields are
+// per-town editable "sources". Additive, isolated table — safe by design.
+// ─────────────────────────────────────────────────────────────────────────────
+model TownDoor {
+  id                 String @id @default(cuid())
+  slug               String @unique
+  name               String
+  fullName           String
+  productName        String
+  tagline            String @default("")
+  domainLabel        String @default("")
+  magazineName       String @default("")
+  madeForLine        String @default("")
+  state              String @default("Texas")
+  stateAbbr          String @default("TX")
+  county             String @default("")
+  zip                String @default("")
+  cityWebsite        String @default("")
+  cityPhone          String @default("")
+  utilityPhone       String @default("")
+  utilityPortal      String @default("")
+  policeNonEmergency String @default("")
+  populationNote     String @default("")
+
+  // Shared platform template (authored on the MASTER = Anna).
+  // JSON array of { title, desc }. Only meaningful on the master row.
+  sharedValueProps Json?
+  // When true (child towns), this town shows the master's sharedValueProps.
+  // When false, it uses its own ownValueProps instead.
+  inheritShared    Boolean @default(true)
+  ownValueProps    Json?
+
+  isMaster Boolean @default(false)
+  isLive   Boolean @default(false)
+  order    Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([order])
+}
+
+// ============================================================================
+// ANNA LIFE — Advertiser/Author/Guest reader (Phase: multi-audience pre-print).
+// Additive models. Support (Type 3) author sign-off on their placed story and
+// (Type 4) expiring guest invite links that stop working when the issue prints.
+// ============================================================================
+
+// Type 4 — an expiring, view-only invite to preview the pre-print magazine.
+// A guest opens /magazine/preview/{token}. The link dies at expiresAt OR when
+// the issue goes to print (status PRINT_ORDERED/PUBLISHED/ARCHIVED), or when an
+// editor revokes it. No account required to view; strictly read-only.
+model MagazineInviteLink {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String // -> MagazineProductionIssue.id
+
+  token    String  @unique // opaque URL token
+  label    String? // e.g. "Chamber board", "Sponsor preview"
+  audience String  @default("GUEST") // GUEST | SPONSOR | PARTNER (Type 5 investor deck deferred)
+  note     String?
+
+  createdByUserId String
+  createdByName   String?
+
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  viewCount    Int       @default(0)
+  lastViewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, issueId])
+  @@index([token])
+}
+
+// Type 3 — a story author's recorded approval of the final version of their
+// placed story. One active approval per (issueId, frameId, authorUserId).
+model MagazineAuthorApproval {
+  id       String @id @default(cuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  issueId  String
+  frameId  String // -> MagazineProductionFrame.id
+
+  authorUserId String
+  authorName   String?
+
+  decision String  @default("APPROVED") // APPROVED | CHANGES_REQUESTED
+  note     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, frameId, authorUserId])
+  @@index([tenantId, issueId])
+}
+
+// ---------------------------------------------------------------------------
+// ROLODEX — Aubre's private contact book (admin-only, never public).
+// A single home for every outreach contact: press/newspapers, sponsors,
+// businesses, nonprofits, government, artists, community members. Contacts are
+// tagged and typed so campaigns can isolate exactly the right audience
+// (e.g. all PRESS for a press release, all NONPROFIT for a fundraiser push).
+// Fed manually or by pasting text / URLs / emails that an AI parser turns into
+// structured contacts. Nothing here is ever shown on the public site.
+// ---------------------------------------------------------------------------
+model RolodexContact {
+  id String @id @default(cuid())
+
+  name         String? // person's name
+  businessName String? // organization / paper / company
+  email        String?
+  phone        String?
+  website      String?
+  address      String?
+  city         String? // for sorting/filtering (e.g. Anna)
+  state        String? // for sorting/filtering (e.g. TX)
+  zip          String?
+
+  // High-level bucket for campaign isolation.
+  contactType String @default("OTHER") // PRESS | SPONSOR | BUSINESS | NONPROFIT | GOVERNMENT | ARTIST | MEDIA | COMMUNITY | OTHER
+
+  industry String? // free-text industry / category
+  tags     String[] // arbitrary campaign tags (e.g. "newspaper", "van-alstyne")
+
+  notes     String?
+  source    String? // where it came from: "Texas news spreadsheet", "pasted email", "URL", ...
+  sourceRef String? // optional URL / filename provenance
+
+  status   String  @default("ACTIVE") // ACTIVE | ARCHIVED
+  isPublic Boolean @default(false) // hard false — admin/private only
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Idempotent import key = normalized(email)|normalized(businessName|name).
+  dedupeKey String @unique
+
+  @@index([contactType, status])
+  @@index([status, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// UserSquarePreference — persists a member's Anna Square layout choices.
+// One row per (user, roleKey). "roleKey" matches DashboardPreset.roleKey
+// (admin|artist|business|city|chamber|council|edc). Storing an added/hidden
+// module here is purely a VIEW preference — it never grants access to a route.
+// ---------------------------------------------------------------------------
+model UserSquarePreference {
+  id            String   @id @default(cuid())
+  userId        String
+  roleKey       String
+  addedModules  String[] @default([])
+  hiddenModules String[] @default([])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation("UserSquarePrefs", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleKey])
+  @@index([userId])
+}
+// ---------------------------------------------------------------------------
+// WriterStory — a contributor's OWN persistent story workspace. This is the
+// writer's private desk: draft, edit, save, upload a cover, and watch a piece
+// move Draft -> Submitted -> Accepted -> Published, with the writer's revenue
+// and simple readership analytics attached. Stories are never lost: every save
+// updates this row. userId is stored plainly (indexed) — no FK edit to User.
+// ---------------------------------------------------------------------------
+enum WriterStoryStatus {
+  DRAFT
+  SUBMITTED
+  ACCEPTED
+  PUBLISHED
+}
+
+model WriterStory {
+  id         String            @id @default(cuid())
+  userId     String
+  authorName String
+  title      String            @default("Untitled story")
+  dek        String? // standfirst / subtitle
+  body       String            @default("")
+  department String? // The Front Porch, Faces of Anna, etc.
+  coverImageUrl  String?
+  coverCloudPath String?
+  // Author's own portrait / bio photo (4x6 portrait). Distinct from story art.
+  authorPortraitUrl  String?
+  authorPortraitPath String?
+  // The writer's own words: what Sierra should look for in our photo library so a
+  // local artist's photo can be placed (no hero upload that robs an artist's spot).
+  photoTags  String[] @default([])
+  status     WriterStoryStatus @default(DRAFT)
+
+  // Sponsorship + revenue (e.g. a sponsored feature like the Prosper story)
+  sponsorName        String?
+  sponsorAmountCents Int? // headline sponsorship value, if any
+  revenueCents       Int     @default(0) // writer's own earned revenue
+
+  // Readership analytics
+  views  Int @default(0)
+  reads  Int @default(0) // finished-reading pings
+
+  wordCount     Int     @default(0)
+  sierraSummary String? // last warm note from Sierra, when saved from the studio
+  source        String? // "sierra-studio" | "workspace"
+
+  submittedAt DateTime?
+  acceptedAt  DateTime?
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([userId, updatedAt])
+}
+
+// ============================================================================
+// RFP — Request for Proposal (members-only, anonymized marketplace)
+// The requester's identity is hidden until they accept a bid. Competing bid
+// amounts are shown to bidders only as an anonymized range (never who bid what).
+// A fee applies only on a successful award of $100k+ (1% -> Anna Arts Council),
+// plus an always-optional gratuity. Everyday jobs carry no fee.
+// ============================================================================
+enum RfpStatus {
+  OPEN // accepting bids
+  REVIEWING // requester is comparing bids
+  AWARDED // a bid was accepted
+  CLOSED // withdrawn / cancelled
+}
+
+enum RfpBidStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  NEEDS_INFO
+  ACCEPTED
+  DECLINED
+}
+
+model RfpRequest {
+  id          String    @id @default(cuid())
+  authorId    String // HIDDEN from bidders until a bid is accepted
+  category    String
+  title       String
+  description String
+  tags        String[]  @default([])
+  timeline    String? // ASAP | This week | This month | Flexible
+  budgetRange String?
+  city        String    @default("Anna")
+  accessNotes String?
+  // Contact — revealed to the winning business ONLY after acceptance.
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  status       RfpStatus @default(OPEN)
+  awardedBidId String?
+  estValue     Int? // accepted contract value (dollars) for fee calc
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  author User     @relation("RfpAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  bids   RfpBid[]
+
+  @@index([status])
+  @@index([authorId])
+}
+
+model RfpBid {
+  id            String       @id @default(cuid())
+  rfpId         String
+  providerId    String // HIDDEN from the requester until this bid is accepted
+  amount        Int // total estimate in dollars
+  scope         String // scope of work
+  timeline      String?
+  notInclusions String?
+  assumptions   String?
+  status        RfpBidStatus @default(SUBMITTED)
+  feeAmount     Int          @default(0) // computed 1% arts donation if amount >= 100k
+  gratuity      Int          @default(0) // always-optional voluntary donation (dollars)
+  termsAccepted Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  rfp      RfpRequest @relation(fields: [rfpId], references: [id], onDelete: Cascade)
+  provider Provider   @relation("ProviderBids", fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@unique([rfpId, providerId])
+  @@index([rfpId])
+  @@index([providerId])
+}
+
+// ============================================================================
+// HELP — the compassionate sibling of RFP.
+// Request for Help: a neighbor's need is double-blind matched to local, claimed,
+// Candid-verified nonprofits. Both sides stay anonymous until approval, then all
+// is revealed and a consented Impact Story can be told.
+// One Request for Help per author per 6 months (enforced in app code).
+// ============================================================================
+enum HelpRequestStatus {
+  SUBMITTED // pending human safety review
+  MATCHING // approved & routed to matching nonprofits (double-blind)
+  IN_REVIEW // a nonprofit is looking into it
+  NEEDS_INFO // more information requested (still anonymous)
+  APPROVED // matched + both identities revealed
+  DECLINED
+  CLOSED
+}
+
+model HelpRequest {
+  id       String   @id @default(cuid())
+  authorId String // SHIELDED until approval
+  category String
+  summary  String // anonymized, public-safe one-liner
+  details  String
+  tags     String[] @default([])
+  urgency  String? // Right away | This week | This month | Flexible
+  // Contact — revealed to the matched nonprofit ONLY after approval.
+  contactName  String?
+  contactEmail String?
+  contactPhone String?
+  status       HelpRequestStatus @default(SUBMITTED)
+  matchedOrgId String? // hidden from author until approval
+  safetyFlag   Boolean           @default(false) // Sierra flagged sensitive content for human eyes
+  safetyNote   String?
+  impactStory  String? // consented, Sierra-drafted kind-deed story
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  author User @relation("HelpAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([authorId])
+}
+
+enum HelpDriveStatus {
+  ACTIVE
+  FULFILLED
+  CLOSED
+}
+
+// Community Help Drive: a public, recipient-shielded in-kind campaign that a
+// verified nonprofit shepherds. The public pledges goods/gift cards; the
+// nonprofit receives and delivers, keeping the recipient's identity and dignity.
+model HelpDrive {
+  id          String          @id @default(cuid())
+  orgId       String // the nonprofit shepherding it (the shield + the hands)
+  title       String // e.g. "A family in Anna needs..."
+  story       String // recipient stays anonymous
+  needs       String[]        @default([]) // in-kind items, gift cards, etc.
+  goalNote    String?
+  status      HelpDriveStatus @default(ACTIVE)
+  createdById String
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  org     NonprofitOrg @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  pledges HelpPledge[]
+
+  @@index([status])
+  @@index([orgId])
+}
+
+model HelpPledge {
+  id         String   @id @default(cuid())
+  driveId    String
+  userId     String?
+  pledgeName String? // optional display name
+  item       String // what they are giving
+  note       String?
+  status     String   @default("PLEDGED") // PLEDGED | RECEIVED | DELIVERED
+  createdAt  DateTime @default(now())
+
+  drive HelpDrive @relation(fields: [driveId], references: [id], onDelete: Cascade)
+
+  @@index([driveId])
+}
+
+// Admin Control Room — live, database-driven platform settings.
+// Each row is a single override keyed by a stable string; `value` holds JSON
+// (prices, names, active flags, banner text, etc.). The app reads these live and
+// falls back to code defaults when a key has no row. Only ADMINs can write.
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
+// -----------------------------------------------------------------------------
+// Nonprofit Hub — Volunteer & Fundraiser Match.
+// A verified Anna nonprofit posts a need (a volunteer role OR a fundraiser
+// cause). We surface an HONEST match count = residents whose interest tags
+// overlap the opportunity's tags. This is a tag-overlap reach estimate only —
+// never a guarantee that those neighbors will show up or give.
+// -----------------------------------------------------------------------------
+model NonprofitOpportunity {
+  id          String   @id @default(cuid())
+  orgId       String
+  kind        String   @default("VOLUNTEER") // VOLUNTEER | FUNDRAISER
+  title       String
+  description String?
+  tags        String[] @default([]) // interest tags used for resident matching
+  goalNote    String? // fundraiser goal, in-kind needs, or shift details (human note)
+  needBy      String? // human-friendly "when", mirrors other date fields
+  status      String   @default("ACTIVE") // ACTIVE | CLOSED
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org NonprofitOrg @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+  @@index([kind, status])
+}
+
+// -----------------------------------------------------------------------------
+// Sierra Grace AI Grant Concierge — a $25/mo paid add-on module that helps a
+// local org DISCOVER and DRAFT grant applications inside the Grant Station.
+// It never guarantees funding and never sends anything externally without
+// human approval. Billing mirrors PlatformSubscription (recurring Stripe sub).
+// -----------------------------------------------------------------------------
+model GrantConciergeSubscription {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  status           String   @default("active") // active | canceled | past_due
+  priceCents       Int      @default(2500)
+  stripeCustomerId String?
+  stripeSubId      String?
+  currentPeriodEnd DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation("UserGrantConcierge", fields: [userId], references: [id], onDelete: Cascade)
+}
+// ============================================================================
+// CLASSIFIEDS — extensible community listings marketplace
+// ----------------------------------------------------------------------------
+// One flexible Listing model powers the resident marketplace (items for sale,
+// free/giveaway, wanted, housing, garage sales, community offers, resident
+// services). It is deliberately generic so future listing kinds — jobs, RFPs,
+// volunteer opportunities, business leads, service requests — plug in via the
+// `type` enum + `attributes` JSON WITHOUT a schema rebuild. Optional providerId
+// / orgId scalars let a listing be attributed to a business or nonprofit later.
+// ============================================================================
+
+enum ListingType {
+  ITEM_FOR_SALE
+  FREEBIE
+  WANTED
+  HOUSING
+  GARAGE_SALE
+  COMMUNITY_OFFER
+  SERVICE // resident-offered service
+  ANNOUNCEMENT
+  // ---- reserved for later slices (schema already supports them) ----
+  JOB
+  RFP
+  VOLUNTEER
+  BUSINESS_LEAD
+  SERVICE_REQUEST
+}
+
+enum ListingStatus {
+  DRAFT
+  ACTIVE
+  PENDING
+  SOLD
+  EXPIRED
+  REMOVED
+  FLAGGED
+}
+
+model Listing {
+  id           String        @id @default(cuid())
+  type         ListingType   @default(ITEM_FOR_SALE)
+  category     String // human category within the type (e.g. "Furniture")
+  title        String
+  description  String
+  priceCents   Int? // null = free / offer / not-applicable
+  isNegotiable Boolean       @default(false)
+  currency     String        @default("USD")
+  status       ListingStatus @default(ACTIVE)
+
+  images     String[] @default([]) // cloud storage public URLs
+  tags       String[] @default([]) // MatchMaker-ready tags
+  attributes Json? // flexible per-type fields (condition, brand, hours, etc.)
+
+  locationLabel String? // "Downtown Anna", neighborhood, etc.
+  contactMethod String  @default("IN_APP") // IN_APP | EMAIL | PHONE
+  contactEmail  String?
+  contactPhone  String?
+
+  authorId   String
+  author     User    @relation("UserListings", fields: [authorId], references: [id], onDelete: Cascade)
+  authorName String? // display snapshot
+
+  // Future linkage (nullable now — no rebuild required later)
+  providerId String? // business-lead / business offer
+  orgId      String? // nonprofit volunteer opportunity
+
+  viewCount     Int       @default(0)
+  isFeatured    Boolean   @default(false)
+  featuredUntil DateTime?
+  expiresAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([type, status])
+  @@index([category])
+  @@index([authorId])
+  @@index([status, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// ANNA LIFE — 88-Page Gated Newsroom unification (V4).
+// Additive, forward-only. Versioned price book + reconstructed inventory slots
+// + order price snapshots + migration audit. All references are loose (String
+// ids) to keep this migration purely additive — no existing model is modified.
+// Integer cents everywhere. Sales stay DISABLED until SUPER_ADMIN approval.
+// ---------------------------------------------------------------------------
+
+model MagazinePriceBookVersion {
+  id            String  @id @default(cuid())
+  tenantId      String // -> Tenant.id (loose ref)
+  publicationId String // -> MagazinePublication.id (loose ref)
+  templateId    String? // -> MagazineTemplate.id (loose ref) the template this book prices
+  version       Int     @default(1)
+  mode          String  @default("ADMIN_EDITABLE_VERSIONED")
+  currency      String  @default("USD")
+
+  productionSalesEnabled Boolean @default(false) // hard OFF until SUPER_ADMIN approval
+  approved               Boolean @default(false)
+  approvedByUserId       String?
+  approvedAt             DateTime?
+  reason                 String?
+  sourceFilename         String?
+  manifestHash           String?
+
+  openMarketTotalCents Int @default(0)
+  coverTotalCents      Int @default(0)
+  grandTotalCents      Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items MagazinePriceBookItem[]
+
+  @@unique([tenantId, publicationId, version])
+  @@index([tenantId])
+}
+
+model MagazinePriceBookItem {
+  id            String                    @id @default(cuid())
+  priceBookId   String
+  priceBook     MagazinePriceBookVersion  @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  tenantId      String
+
+  priceKey  String // AD_FULL, COVER_OBC, ...
+  kind      String // OPEN_MARKET | COVER
+  size      String // FULL | HALF | INSIDE_FRONT | ...
+  priceCents Int   @default(0)
+  saleMode  String // CLICK_TO_BUY | INQUIRY
+  slotCount Int    @default(0)
+
+  adminEditable      Boolean @default(true)
+  productionApproved Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@unique([priceBookId, priceKey])
+  @@index([tenantId])
+}
+
+model MagazineInventorySlot {
+  id            String  @id @default(cuid())
+  tenantId      String // -> Tenant.id (loose ref)
+  publicationId String // -> MagazinePublication.id (loose ref)
+  issueId       String // -> MagazineProductionIssue.id (loose ref)
+  templateId    String // -> MagazineTemplate.id (loose ref)
+
+  slotId      String // ISSUE-TEMPLATE-P15-FULL-01  (natural key within an issue)
+  physicalPage Int
+  pageCode    String
+  printedPage Int?
+  priceKey    String
+  size        String
+  kind        String  @default("OPEN_MARKET") // OPEN_MARKET | COVER
+  saleMode    String // CLICK_TO_BUY | INQUIRY
+
+  xIn      Float @default(0)
+  yIn      Float @default(0)
+  widthIn  Float @default(0)
+  heightIn Float @default(0)
+  fpe      Float @default(1)
+
+  seedPriceCents  Int     @default(0) // snapshot of the seed price (integer cents)
+  initialStatus   String  @default("DRAFT_ADMIN_REVIEW")
+  status          String  @default("DRAFT_ADMIN_REVIEW")
+  publicBoard     Boolean @default(true)
+  placementStatus String  @default("RECONSTRUCTED_REQUIRES_VISUAL_QA")
+  salesEnabled    Boolean @default(false) // hard OFF until approval
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, slotId])
+  @@index([tenantId, issueId])
+  @@index([issueId, kind])
+}
+
+model MagazineOrderPriceSnapshot {
+  id          String @id @default(cuid())
+  tenantId    String
+  issueId     String
+  slotId      String // -> MagazineInventorySlot.slotId
+  orderId     String? // -> MagazineAdOrder.id (loose ref; null until sold)
+
+  priceBookId      String
+  priceBookVersion Int
+  priceKey         String
+  priceCents       Int
+  saleMode         String
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId, issueId])
+  @@index([orderId])
+}
+
+model MagazineMigrationRun {
+  id            String  @id @default(cuid())
+  tenantId      String
+  publicationId String
+  templateId    String? // -> MagazineTemplate.id created/reused
+  issueId       String? // -> MagazineProductionIssue.id created/reused
+
+  runKey        String // idempotency key, e.g. "V4-88-PAGE-GATED-NEWSROOM"
+  schemaVersion String?
+  sourceFilename String?
+  manifestHash  String?
+
+  status        String  @default("DRAFT_ADMIN_REVIEW")
+  salesEnabled  Boolean @default(false)
+
+  physicalPageCount   Int @default(0)
+  pagesImported       Int @default(0)
+  framesImported      Int @default(0)
+  openMarketSlots     Int @default(0)
+  coverSlots          Int @default(0)
+  newsroomOpportunities Int @default(0)
+
+  openMarketTotalCents Int @default(0)
+  coverTotalCents      Int @default(0)
+  grandTotalCents      Int @default(0)
+
+  reportJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, runKey])
+  @@index([tenantId])
+}
+
+// ============================================================================
+// V4 GATED NEWSROOM — additive, loose-ref models. No existing model touched.
+// The 88-page TOC becomes a living assignment / claim board; AI tags are
+// versioned; a scoped Guest Pass may grant temporary Anna access.
+// ============================================================================
+
+// One row per visible newsroom opportunity (imported from the 88-page manifest
+// CSV). This is the "table of contents becomes the assignment board" record.
+model MagazineNewsroomOpportunity {
+  id            String @id @default(cuid())
+  tenantId      String
+  issueId       String // -> MagazineProductionIssue.id (loose ref)
+  opportunityId String // stable id from the manifest (ISSUE-TEMPLATE-...)
+
+  physicalPage Int
+  pageCode     String
+  pageTitle    String?
+  frameType    String // TEXT|IMAGE|DATA|CAPTION|AD|LOGO|QR
+  contentNeed  String? // ARTICLE_OR_COPY|PHOTO_OR_ARTWORK|SPONSOR|DATA|...
+  label        String?
+  claimableBy  String // raw manifest role string (e.g. "PRESS_PASS_WRITER / SIERRA_GRACE_EDITOR")
+  requiredTags String[] @default([])
+  targetWords  String? // e.g. "150-450"
+  matchMode    String? // AI CANDIDATES + HUMAN SAVE | EDITORIAL_SELECTION | PAID_PLACEMENT
+  paymentEligible Boolean @default(false)
+  analyticsId  String?
+
+  // State machine: OPEN -> CLAIMED -> DRAFT -> SUBMITTED -> SIERRA_REVIEW ->
+  // EDITOR_APPROVED -> READY_FOR_LAYOUT -> PLACED -> FINAL_LOCKED -> PUBLISHED.
+  // AD frames are LOCKED_AD (never claimable by PRESS PASS contributors).
+  boardStatus     String @default("OPEN")
+  claimedByUserId String?
+  claimedByName   String?
+  claimedAt       DateTime?
+  heldUntil       DateTime?
+
+  // Contributor recognition / payment readiness (spec §7).
+  revenueShareEligible Boolean @default(false)
+  selectedContributorUserId String?
+  selectionNotifiedAt       DateTime?
+  payoutOnboardingSentAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([issueId, opportunityId])
+  @@index([tenantId, issueId, boardStatus])
+  @@index([issueId, frameType])
+  @@index([claimedByUserId])
+}
+
+// Versioned AI/human tag history for an opportunity (spec §6, 5-10 tags/version).
+model MagazineOpportunityTagVersion {
+  id            String   @id @default(cuid())
+  tenantId      String
+  opportunityId String // -> MagazineNewsroomOpportunity.id (loose ref)
+  version       Int
+  tags          String[] @default([])
+  source        String   @default("AI") // AI | HUMAN | LOCKED
+  locked        Boolean  @default(false)
+  createdByUserId String?
+  createdByName   String?
+  note          String?
+  createdAt     DateTime @default(now())
+
+  @@unique([opportunityId, version])
+  @@index([tenantId, opportunityId])
+}
+
+// Scoped, expiring, revocable Guest Pass into gated Anna experiences (spec §12).
+model AnnaGuestPass {
+  id       String  @id @default(cuid())
+  tenantId String?
+  token    String  @unique @default(cuid())
+  email    String
+  userId   String?
+  name     String?
+  scope    String  @default("MAGAZINE") // MAGAZINE | TOUR | STORIES | ALL
+  reason   String?
+  status   String  @default("PENDING") // PENDING | APPROVED | REVOKED | EXPIRED
+
+  issuedByUserId String?
+  issuedByName   String?
+  approvedAt     DateTime?
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email, status])
+  @@index([userId, status])
+}
+// Anna TowneLIFE Cover Story interview. One row per invited subject.
+// The public form at /interview/{slug} writes here; the admin Cover Story tab
+// reads it; Sierra Grace drafts the feature from the submitted transcript.
+model CoverStoryInterview {
+  id           String    @id @default(cuid())
+  slug         String    @unique // public link: /interview/{slug}
+  subjectName  String
+  subjectEmail String?
+  subjectPhone String?
+  invitedBy    String? // admin name/note for provenance
+  status       String    @default("INVITED") // INVITED | DRAFT | SUBMITTED
+  answers      Json? // { q1: "...", ... } keyed by lib/interview/cover-story-questions
+  headshotUrl  String?
+  editorNote   String?
+  submittedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([status, createdAt])
+}
+
+// ── Press Pass Portal: Follow / Tip / Suggest / Assign ──────────────────────
+
+model WriterFollow {
+  id         String   @id @default(cuid())
+  followerId String   // platform userId
+  writerId   String   // MagazineContributor.id
+  createdAt  DateTime @default(now())
+
+  @@unique([followerId, writerId])
+  @@index([writerId])
+}
+
+model WriterTip {
+  id          String   @id @default(cuid())
+  writerId    String   // MagazineContributor.id
+  tipperName  String
+  tipperEmail String?
+  message     String
+  createdAt   DateTime @default(now())
+
+  @@index([writerId, createdAt])
+}
+
+model StorySuggestion {
+  id             String   @id @default(cuid())
+  writerId       String?  // null = general suggestion to the newsroom
+  suggestedBy    String?  // userId if signed in
+  suggestedName  String
+  suggestedEmail String?
+  topic          String
+  details        String?
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model WriterAssignment {
+  id          String    @id @default(cuid())
+  writerId    String    // MagazineContributor.id
+  assignedBy  String    // admin userId
+  title       String
+  description String?
+  department  String?
+  deadline    DateTime?
+  status      String    @default("OPEN") // OPEN | ACCEPTED | IN_PROGRESS | SUBMITTED | COMPLETED
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([writerId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Anna TowneLIFE Profile Application (business front-door review queue)
+// ---------------------------------------------------------------------------
+// When an Anna / Anna-ETJ business self-registers, a live public listing is NOT
+// created automatically. Instead this application lands in the admin Approvals
+// queue for Aubre' to review. On approval the linked Provider is verified and
+// becomes eligible for the public directory. Out-of-Anna businesses never reach
+// this queue — they are offered a Guest Pass at the door instead.
+model AnnaProfileApplication {
+  id             String    @id @default(cuid())
+  userId         String
+  providerId     String?   // set once a pending Provider profile is created
+  businessName   String
+  category       String?
+  homeLocation   String    // selected location value (anna_city | anna_etj)
+  contactEmail   String?
+  contactPhone   String?
+  website        String?
+  note           String?
+  status         String    @default("PENDING") // PENDING | APPROVED | DECLINED
+  reviewedByUserId String?
+  reviewedByName   String?
+  reviewedAt       DateTime?
+  decisionNote     String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([userId])
+}
+// ---------------------------------------------------------------------------
+// Mercy Day Journal — the operator's daily agenda log
+// ---------------------------------------------------------------------------
+// One row per operator per day. `items` holds the checklist of efforts Aubre'
+// worked on that day: each item = { label, done, note, custom }. Powers the
+// "Start My Day" agenda journal so efforts are recorded (never fabricated).
+model MercyJournal {
+  id        String   @id @default(cuid())
+  userId    String
+  date      String   // YYYY-MM-DD in America/Chicago
+  items     Json     // [{ label: string, done: boolean, note: string, custom?: boolean }]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date])
+  @@index([userId, date])
+}
